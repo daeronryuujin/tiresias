@@ -7,8 +7,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   build-listing:
@@ -17,21 +15,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Get release info
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Get version and zip URL
         id: release
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          VERSION="${VERSION#v}"  # strip leading 'v' if present
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          ZIP_URL="https://github.com/${{ github.repository }}/archive/refs/tags/${{ github.event.release.tag_name }}.zip"
-          echo "zip_url=$ZIP_URL" >> $GITHUB_OUTPUT
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          ZIP_URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.zip"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "zip_url=${ZIP_URL}" >> $GITHUB_OUTPUT
 
       - name: Compute zip SHA256
         id: sha
         run: |
           curl -sL "${{ steps.release.outputs.zip_url }}" -o package.zip
           SHA=$(sha256sum package.zip | awk '{print $1}')
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
 
       - name: Update index.json
         run: |
@@ -39,29 +40,20 @@ jobs:
           ZIP_URL="${{ steps.release.outputs.zip_url }}"
           SHA="${{ steps.sha.outputs.sha }}"
 
-          python3 - <<EOF
-          import json, sys
+          jq --arg version "$VERSION" \
+             --arg url "$ZIP_URL" \
+             --arg sha "$SHA" \
+             '.packages["com.daeronryuujin.tiresias"].versions[$version] = {
+               "name": "com.daeronryuujin.tiresias",
+               "displayName": "Tiresias",
+               "version": $version,
+               "unity": "2019.4",
+               "description": "Unity Editor REST API that exposes scene state, assets, and compiler status for AI code assistant integration.",
+               "url": $url,
+               "zipSHA256": $sha
+             }' index.json > index.tmp.json && mv index.tmp.json index.json
 
-          with open('index.json', 'r') as f:
-              data = json.load(f)
-
-          pkg = data['packages']['com.daeronryuujin.tiresias']
-
-          pkg['versions']['$VERSION'] = {
-              'name': 'com.daeronryuujin.tiresias',
-              'displayName': 'Tiresias',
-              'version': '$VERSION',
-              'unity': '2019.4',
-              'description': 'Unity Editor REST API that exposes scene state, assets, and compiler status for AI code assistant integration.',
-              'url': '$ZIP_URL',
-              'zipSHA256': '$SHA'
-          }
-
-          with open('index.json', 'w') as f:
-              json.dump(data, f, indent=2)
-
-          print(f"Added version $VERSION to index.json")
-          EOF
+          echo "Updated index.json with version $VERSION"
 
       - name: Commit updated index.json
         run: |
@@ -70,8 +62,3 @@ jobs:
           git add index.json
           git commit -m "VPM: add version ${{ steps.release.outputs.version }}"
           git push
-
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
-        with:
-          artifact_name: github-pages
