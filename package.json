@@ -4,8 +4,14 @@
   "displayName": "Tiresias",
   "description": "Unity Editor REST API that exposes scene state, assets, and compiler status for AI code assistant integration.",
   "unity": "2019.4",
-  "keywords": ["editor", "ai", "tools", "claude"],
+  "keywords": [
+    "editor",
+    "ai",
+    "tools",
+    "claude"
+  ],
   "author": {
     "name": "Daeronryuujin"
-  }
+  },
+  "vpmDependencies": {}
 }
