@@ -5,8 +5,17 @@
   "author": "Daeronryuujin",
   "packages": {
     "com.daeronryuujin.tiresias": {
-      "versions": {}
-
+      "versions": {
+        "1.3.0": {
+          "name": "com.daeronryuujin.tiresias",
+          "displayName": "Tiresias",
+          "version": "1.3.0",
+          "unity": "2022.3",
+          "description": "Unity Editor REST API that exposes scene state, assets, and compiler status for AI code assistant integration.",
+          "url": "https://github.com/daeronryuujin/tiresias/releases/download/v1.3.0/tiresias-1.3.0.zip",
+          "zipSHA256": "6B08BCE184A62A553F53481767EF051B15690FD9F94148E569A36DAA0DBE8F02"
+        }
+      }
     }
   }
 }
