@@ -1,0 +1,96 @@
+name: VPM Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'index.json'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version from package.json
+        id: pkg
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Check if release already exists
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.pkg.outputs.tag }}" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build clean zip
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          mkdir -p /tmp/pkg
+          cp -r Editor package.json README.md CLAUDE.md /tmp/pkg/
+          cd /tmp/pkg
+          zip -r /tmp/tiresias-${{ steps.pkg.outputs.version }}.zip .
+          echo "Built zip contents:"
+          unzip -l /tmp/tiresias-${{ steps.pkg.outputs.version }}.zip
+
+      - name: Compute SHA256
+        if: steps.check.outputs.exists == 'false'
+        id: sha
+        run: |
+          SHA=$(sha256sum /tmp/tiresias-${{ steps.pkg.outputs.version }}.zip | awk '{print toupper($1)}')
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+
+      - name: Create release and upload zip
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.pkg.outputs.tag }}" \
+            /tmp/tiresias-${{ steps.pkg.outputs.version }}.zip \
+            --title "Tiresias ${{ steps.pkg.outputs.tag }}" \
+            --generate-notes
+
+      - name: Update index.json
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.pkg.outputs.version }}"
+          ZIP_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.pkg.outputs.tag }}/tiresias-${{ steps.pkg.outputs.version }}.zip"
+          SHA="${{ steps.sha.outputs.sha }}"
+
+          jq --arg version "$VERSION" \
+             --arg url "$ZIP_URL" \
+             --arg sha "$SHA" \
+             '.packages["com.daeronryuujin.tiresias"].versions[$version] = {
+               "name": "com.daeronryuujin.tiresias",
+               "displayName": "Tiresias",
+               "version": $version,
+               "unity": "2022.3",
+               "description": "Unity Editor REST API that exposes scene state, assets, and compiler status for AI code assistant integration.",
+               "url": $url,
+               "zipSHA256": $sha
+             }' index.json > index.tmp.json && mv index.tmp.json index.json
+
+          echo "Updated index.json:"
+          cat index.json
+
+      - name: Commit and push index.json
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.json
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "VPM: add version ${{ steps.pkg.outputs.version }}"
+          git push origin main
