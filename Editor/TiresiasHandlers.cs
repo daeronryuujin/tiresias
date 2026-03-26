@@ -196,21 +196,36 @@ namespace Tiresias
 
         // ── /compiler/errors ─────────────────────────────────────────────────
 
+        private static readonly List<Dictionary<string, object>> _compilerErrors = new List<Dictionary<string, object>>();
+        private static bool _hooked;
+
+        [InitializeOnLoadMethod]
+        private static void HookCompilationEvents()
+        {
+            if (_hooked) return;
+            _hooked = true;
+            CompilationPipeline.compilationStarted += _ => { _compilerErrors.Clear(); };
+            CompilationPipeline.assemblyCompilationFinished += (path, messages) =>
+            {
+                foreach (var m in messages)
+                {
+                    if (m.type != CompilerMessageType.Error) continue;
+                    _compilerErrors.Add(new Dictionary<string, object>
+                    {
+                        ["file"]    = m.file,
+                        ["line"]    = m.line,
+                        ["message"] = m.message,
+                    });
+                }
+            };
+        }
+
         public static void CompilerErrors(HttpListenerRequest req, HttpListenerResponse res)
         {
-            // CompilationPipeline gives us the last assembly errors
-            var messages = CompilationPipeline.GetAssemblies()
-                .SelectMany(a => a.compilerMessages ?? Array.Empty<CompilerMessage>())
-                .Where(m => m.type == CompilerMessageType.Error)
-                .Select(m => Json.Object(new Dictionary<string, object>
-                {
-                    ["file"]    = m.file,
-                    ["line"]    = m.line,
-                    ["message"] = m.message,
-                }))
+            var entries = _compilerErrors
+                .Select(e => Json.Object(e))
                 .ToList();
-
-            ResponseHelper.Send(res, 200, "[" + string.Join(",", messages) + "]");
+            ResponseHelper.Send(res, 200, "[" + string.Join(",", entries) + "]");
         }
 
         // ── /console/errors ───────────────────────────────────────────────────
