@@ -18,26 +18,47 @@ jobs:
       - name: Install jq
         run: sudo apt-get install -y jq
 
-      - name: Get version and zip URL
+      - name: Get version
         id: release
         run: |
           TAG="${{ github.event.release.tag_name }}"
           VERSION="${TAG#v}"
-          ZIP_URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.zip"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "zip_url=${ZIP_URL}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
-      - name: Compute zip SHA256
+      - name: Build clean zip
+        run: |
+          mkdir -p /tmp/pkg
+          cp -r Editor CLAUDE.md README.md package.json /tmp/pkg/
+          cd /tmp/pkg
+          zip -r /tmp/tiresias-${{ steps.release.outputs.version }}.zip .
+          echo "Built zip:"
+          unzip -l /tmp/tiresias-${{ steps.release.outputs.version }}.zip | head -20
+
+      - name: Compute SHA256
         id: sha
         run: |
-          curl -sL "${{ steps.release.outputs.zip_url }}" -o package.zip
-          SHA=$(sha256sum package.zip | awk '{print $1}')
+          SHA=$(sha256sum /tmp/tiresias-${{ steps.release.outputs.version }}.zip | awk '{print $1}')
           echo "sha=${SHA}" >> $GITHUB_OUTPUT
+
+      - name: Upload zip to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ steps.release.outputs.tag }} \
+            /tmp/tiresias-${{ steps.release.outputs.version }}.zip \
+            --clobber
+
+      - name: Set zip URL
+        id: url
+        run: |
+          ZIP_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.release.outputs.tag }}/tiresias-${{ steps.release.outputs.version }}.zip"
+          echo "zip_url=${ZIP_URL}" >> $GITHUB_OUTPUT
 
       - name: Update index.json
         run: |
           VERSION="${{ steps.release.outputs.version }}"
-          ZIP_URL="${{ steps.release.outputs.zip_url }}"
+          ZIP_URL="${{ steps.url.outputs.zip_url }}"
           SHA="${{ steps.sha.outputs.sha }}"
 
           jq --arg version "$VERSION" \
@@ -53,7 +74,8 @@ jobs:
                "zipSHA256": $sha
              }' index.json > index.tmp.json && mv index.tmp.json index.json
 
-          echo "Updated index.json with version $VERSION"
+          echo "Updated index.json:"
+          cat index.json
 
       - name: Commit updated index.json
         run: |
