@@ -20,15 +20,20 @@ This gives Claude Code the context it needs to write correct code the first time
 
 ## Installation
 
-### Option A — Copy files
+### VCC (recommended)
+
+1. In VRChat Creator Companion, go to **Settings → Packages → Add Repository**
+2. Paste: `https://daeronryuujin.github.io/tiresias/index.json`
+3. Add **Tiresias** to your project from the package list
+
+CLAUDE.md will be automatically copied to your project root on first compile.
+
+### Manual
+
 1. Create `Assets/Editor/Tiresias/` in your Unity project
 2. Copy all `.cs` files from this repo into that folder
-3. Unity will auto-compile and the server will start
-
-### Option B — Git submodule
-```bash
-git submodule add https://github.com/YOUR_USERNAME/tiresias Assets/Editor/Tiresias
-```
+3. Copy `CLAUDE.md` to your project root
+4. Unity will auto-compile and the server will start
 
 ---
 
