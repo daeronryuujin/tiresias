@@ -66,3 +66,76 @@ curl http://localhost:7890/assets/scripts
 3. Wait for Unity to recompile (poll `/compiler/status` until `isCompiling` is false)
 4. Check `/compiler/errors` again
 5. Do not proceed if there are errors
+
+---
+
+## Development Reference (for working ON Tiresias itself)
+
+### Repository & Versioning
+
+- **GitHub**: `daeronryuujin/tiresias`
+- **Package ID**: `com.daeronryuujin.tiresias`
+- **Current version**: See `package.json` → `version` field (was 1.4.0 as of last session)
+- **Default branch**: `main` (note: local repo also has `master` — always push to `main`)
+- **VPM listing URL**: `https://daeronryuujin.github.io/tiresias/index.json`
+
+### File Layout
+
+```
+tiresias/
+├── Editor/                      # All C# source — Unity Editor-only
+│   ├── TiresiasServer.cs        # [InitializeOnLoad] entry point, HttpListener on background thread
+│   ├── TiresiasRouter.cs        # URL path → handler dispatch, CORS headers
+│   ├── TiresiasHandlers.cs      # All endpoint implementations (Unity Editor API calls)
+│   ├── ResponseHelper.cs        # UTF-8 JSON response writer
+│   ├── Json.cs                  # Minimal JSON serializer (no external deps)
+│   ├── TiresiasWindow.cs        # Editor window under Tools → Tiresias → Open Panel
+│   └── TiresiasInstaller.cs     # Auto-copies CLAUDE.md to project root on first compile
+├── package.json                 # VPM/UPM package manifest (version source of truth)
+├── index.json                   # VPM repository listing (auto-updated by CI)
+├── README.md                    # User-facing docs
+├── CLAUDE.md                    # This file — included in zip, auto-installed by TiresiasInstaller
+└── .github/workflows/
+    └── vpm-release.yml          # Single CI workflow: release + VPM index update
+```
+
+### Architecture Notes
+
+- **TiresiasServer.cs**: `[InitializeOnLoad]` static constructor calls `Start()`. Runs `HttpListener` on port 7890 in a background thread. Stops on `EditorApplication.quitting`.
+- **TiresiasRouter.cs**: Simple `switch` on `req.Url.AbsolutePath.TrimEnd('/')`. Adds CORS headers. Routes to static methods on `TiresiasHandlers`.
+- **TiresiasHandlers.cs**: Each endpoint is a static method taking `(HttpListenerRequest, HttpListenerResponse)`. The `/compiler/errors` endpoint uses event hooks (`CompilationPipeline.compilationStarted` + `assemblyCompilationFinished`) with `[InitializeOnLoadMethod]` — do NOT use `CompilationPipeline.GetAssemblies()` for this (its `Assembly` objects don't have a `compilerMessages` property).
+- **TiresiasInstaller.cs**: Copies `CLAUDE.md` from `Packages/com.daeronryuujin.tiresias/CLAUDE.md` to project root. Uses `SessionState` to run once per editor session. Menu item at `Tools/Tiresias/Reinstall CLAUDE.md` for manual re-copy.
+- **Json.cs**: Hand-rolled serializer. `Json.Object(Dictionary<string,object>)` and `Json.Array(List<string>)` and `Json.Quote(string)`.
+
+### CI/CD: vpm-release.yml
+
+Single workflow triggered on push to `main` (with `paths-ignore: ['index.json']` to prevent loops):
+
+1. Reads version from `package.json`
+2. Checks if GitHub release for that tag already exists (skips if so)
+3. Builds a clean zip with `package.json` at root (copies `Editor/`, `package.json`, `README.md`, `CLAUDE.md`)
+4. Computes SHA256 (uppercase hex)
+5. Creates GitHub release + uploads zip via `gh release create`
+6. Updates `index.json` with new version entry via `jq`
+7. Commits and pushes `index.json` back to `main`
+
+**Key gotcha**: `GITHUB_TOKEN`-created releases do NOT trigger other GitHub Actions workflows. That's why this is a single combined workflow instead of separate auto-release + release workflows.
+
+### Release Process
+
+To cut a new release:
+1. Bump `version` in `package.json`
+2. Commit and push to `main`
+3. The workflow handles everything else automatically (release, zip, SHA, index.json update)
+
+### Important Gotchas
+
+- **Tiresias Editor code uses `List<T>` and LINQ freely** — UdonSharp constraints only apply to *world scripts* (scripts that inherit from `UdonSharpBehaviour`). Editor code runs in the Unity Editor, not in VRChat, so standard C# is fine.
+- **`index.json`** is auto-maintained by CI. Don't manually edit version entries — they'll be overwritten or duplicated.
+- **The zip must have `package.json` at its root** (not nested in a subfolder) for VPM/UPM compatibility.
+- **`/console/errors`** exists as a route but returns a placeholder — Unity has no public API for reading past console log entries.
+- **Port 7890** is hardcoded in `TiresiasServer.cs` (`PREFIX` constant).
+
+### PR Workflow
+
+All PRs in previous sessions were created against `main` from branch `claude/setup-github-actions-workflow-dXPIW`. User has authorized creating and merging PRs and incrementing versions for releases. Five PRs merged so far (#1-#5).
