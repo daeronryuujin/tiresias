@@ -10,6 +10,10 @@ public class AudienceVoteButton : UdonSharpBehaviour
     [Tooltip("Optional label that shows the live vote count")]
     [SerializeField] private Text countLabel;
 
+    [Header("Server Mode (optional)")]
+    [Tooltip("Contestant ID on the server. Used when manager is in server mode.")]
+    [SerializeField] private int serverContestantId;
+
     [UdonSynced] private int _voteCount;
 
     public int GetVoteCount()
@@ -21,6 +25,9 @@ public class AudienceVoteButton : UdonSharpBehaviour
     {
         if (manager == null) return;
         if (!manager.CanVote()) return;
+
+        // In server mode, voting is handled by ContestVotingPanel instead
+        if (manager.UseServerMode()) return;
 
         Networking.SetOwner(Networking.LocalPlayer, gameObject);
         _voteCount++;

@@ -1,0 +1,103 @@
+{% extends "layout.html" %}
+{% block title %}{{ show.title }} — Contest Dashboard{% endblock %}
+{% block content %}
+<h1>{{ show.title }}</h1>
+<p>Date: {{ show.date }} | Status: <span class="badge badge-{{ show.status }}">{{ show.status }}</span></p>
+
+<div class="status-controls">
+    <form method="POST" action="{{ url_for('shows.update_show_status_page', show_id=show.id) }}" class="form-inline">
+        {% if show.status == 'upcoming' %}
+        <input type="hidden" name="status" value="active">
+        <button type="submit">Start Show</button>
+        {% elif show.status == 'active' %}
+        <input type="hidden" name="status" value="completed">
+        <button type="submit">End Show</button>
+        {% endif %}
+    </form>
+</div>
+
+<h2>Contestants</h2>
+<form method="POST" action="{{ url_for('contestants.add_contestant_page', show_id=show.id) }}" class="form-inline">
+    <input type="text" name="display_name" placeholder="Contestant name" required>
+    <button type="submit">Add</button>
+</form>
+
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Order</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for c in contestants %}
+        <tr>
+            <td>{{ c.id }}</td>
+            <td>{{ c.display_name }}</td>
+            <td>{{ c.slot_order }}</td>
+            <td>
+                <form method="POST" action="{{ url_for('contestants.eliminate_contestant_page', show_id=show.id, contestant_id=c.id) }}" class="form-inline">
+                    <button type="submit" class="btn-small btn-warn">Eliminate</button>
+                </form>
+                <form method="POST" action="{{ url_for('contestants.remove_contestant_page', show_id=show.id, contestant_id=c.id) }}" class="form-inline">
+                    <button type="submit" class="btn-small btn-danger">Remove</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<h2>Rounds</h2>
+<form method="POST" action="{{ url_for('rounds.create_round_page', show_id=show.id) }}" class="form-inline">
+    <input type="text" name="label" placeholder="Round label (optional)">
+    <button type="submit">New Round</button>
+</form>
+
+<table>
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Label</th>
+            <th>Status</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in rounds %}
+        <tr>
+            <td>{{ r.round_number }}</td>
+            <td>{{ r.label or '—' }}</td>
+            <td><span class="badge badge-{{ r.status }}">{{ r.status }}</span></td>
+            <td><a href="{{ url_for('rounds.round_detail_page', round_id=r.id) }}">Manage</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<h2>Leaderboard</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Rank</th>
+            <th>Contestant</th>
+            <th>Total Votes</th>
+            <th>Rounds Played</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for entry in leaderboard %}
+        <tr>
+            <td>{{ loop.index }}</td>
+            <td>{{ entry.display_name }}</td>
+            <td>{{ entry.total_votes }}</td>
+            <td>{{ entry.rounds_played }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<p class="hint">World endpoint base: <code>/world/{{ show.id }}/</code></p>
+{% endblock %}

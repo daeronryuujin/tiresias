@@ -19,11 +19,24 @@ public class AudienceVotingManager : UdonSharpBehaviour
     [SerializeField] private GameObject votingPanel;
     [SerializeField] private GameObject resultsPanel;
 
+    [Header("Server-Backed Mode (optional)")]
+    [Tooltip("Assign to enable server-backed voting. Leave null for local UdonSynced mode.")]
+    [SerializeField] private ContestServerClient serverClient;
+    [Tooltip("Server-backed voting panel — used when serverClient is assigned")]
+    [SerializeField] private ContestVotingPanel serverVotingPanel;
+    [Tooltip("Server-backed leaderboard — used when serverClient is assigned")]
+    [SerializeField] private ContestLeaderboardPanel serverLeaderboardPanel;
+
     [UdonSynced] private bool _votingOpen;
     [UdonSynced] private int _roundNumber;
 
     private bool _hasVoted;
     private int _lastSeenRound;
+
+    public bool UseServerMode()
+    {
+        return serverClient != null;
+    }
 
     public bool IsVotingOpen()
     {
@@ -60,6 +73,13 @@ public class AudienceVotingManager : UdonSharpBehaviour
         }
 
         if (resultsPanel != null) resultsPanel.SetActive(false);
+
+        if (UseServerMode() && serverVotingPanel != null)
+        {
+            serverVotingPanel.Show();
+            serverVotingPanel.SetRound(_roundNumber);
+        }
+
         RefreshUI();
     }
 
@@ -70,6 +90,17 @@ public class AudienceVotingManager : UdonSharpBehaviour
 
         _votingOpen = false;
         RequestSerialization();
+
+        if (UseServerMode())
+        {
+            if (serverVotingPanel != null) serverVotingPanel.Hide();
+            if (serverLeaderboardPanel != null)
+            {
+                serverLeaderboardPanel.Show();
+                serverLeaderboardPanel.StartPolling();
+            }
+        }
+
         ShowResults();
     }
 
