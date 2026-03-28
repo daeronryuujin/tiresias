@@ -32,6 +32,15 @@
           "description": "Unity Editor REST API that exposes scene state, assets, and compiler status for AI code assistant integration.",
           "url": "https://github.com/daeronryuujin/tiresias/releases/download/v1.5.0-beta.1/tiresias-1.5.0-beta.1.zip",
           "zipSHA256": "C1F55FE91F41A82A49D04C7CD8ED3E51DC00A9C5F4BCDDA7DD7390969E8A4BAB"
+        },
+        "1.5.0": {
+          "name": "com.daeronryuujin.tiresias",
+          "displayName": "Tiresias",
+          "version": "1.5.0",
+          "unity": "2022.3",
+          "description": "Unity Editor REST API that exposes scene state, assets, and compiler status for AI code assistant integration.",
+          "url": "https://github.com/daeronryuujin/tiresias/releases/download/v1.5.0/tiresias-1.5.0.zip",
+          "zipSHA256": "A444F99355932CB5E16FF716B726669850D8FC0C19608A17393287A223122C28"
         }
       }
     }
