@@ -25,6 +25,7 @@ It gives you live read access to the Unity scene, asset list, and compiler state
 | `/assets/prefabs` | GET | All prefab paths under Assets/ |
 | `/compiler/status` | GET | isCompiling, isUpdating booleans |
 | `/compiler/errors` | GET | Array of {file, line, message} for compile errors |
+| `/api/scene/{name}/components/{type}/fields/{field}` | PUT | Set a serialized object reference field on a component |
 
 ## Usage Pattern (bash)
 
@@ -40,6 +41,16 @@ curl "http://localhost:7890/scene/object?name=VideoPlayer"
 
 # What scripts exist?
 curl http://localhost:7890/assets/scripts
+
+# Set a serialized field reference (e.g. assign a GameObject to a script field)
+curl -X PUT "http://localhost:7890/api/scene/Canvas%2FPanel/components/MyScript/fields/targetRef" \
+  -H "Content-Type: application/json" \
+  -d '{"referenceType":"gameObject","targetGameObjectName":"VideoPlayer"}'
+
+# Set a component reference (e.g. assign a specific component)
+curl -X PUT "http://localhost:7890/api/scene/Canvas%2FPanel/components/MyScript/fields/playerRenderer" \
+  -H "Content-Type: application/json" \
+  -d '{"referenceType":"component","targetGameObjectName":"VideoPlayer","targetComponentType":"MeshRenderer"}'
 ```
 
 ## Hard Rules for This Project
@@ -90,7 +101,8 @@ tiresias/
 │   ├── ResponseHelper.cs        # UTF-8 JSON response writer
 │   ├── Json.cs                  # Minimal JSON serializer (no external deps)
 │   ├── TiresiasWindow.cs        # Editor window under Tools → Tiresias → Open Panel
-│   └── TiresiasInstaller.cs     # Auto-copies CLAUDE.md to project root on first compile
+│   ├── TiresiasInstaller.cs     # Auto-copies CLAUDE.md to project root on first compile
+│   └── MainThreadDispatcher.cs  # [InitializeOnLoad] queue-drain for main-thread write ops
 ├── package.json                 # VPM/UPM package manifest (version source of truth)
 ├── index.json                   # VPM repository listing (auto-updated by CI)
 ├── README.md                    # User-facing docs
@@ -105,7 +117,8 @@ tiresias/
 - **TiresiasRouter.cs**: Simple `switch` on `req.Url.AbsolutePath.TrimEnd('/')`. Adds CORS headers. Routes to static methods on `TiresiasHandlers`.
 - **TiresiasHandlers.cs**: Each endpoint is a static method taking `(HttpListenerRequest, HttpListenerResponse)`. The `/compiler/errors` endpoint uses event hooks (`CompilationPipeline.compilationStarted` + `assemblyCompilationFinished`) with `[InitializeOnLoadMethod]` — do NOT use `CompilationPipeline.GetAssemblies()` for this (its `Assembly` objects don't have a `compilerMessages` property).
 - **TiresiasInstaller.cs**: Copies `CLAUDE.md` from `Packages/com.daeronryuujin.tiresias/CLAUDE.md` to project root. Uses `SessionState` to run once per editor session. Menu item at `Tools/Tiresias/Reinstall CLAUDE.md` for manual re-copy.
-- **Json.cs**: Hand-rolled serializer. `Json.Object(Dictionary<string,object>)` and `Json.Array(List<string>)` and `Json.Quote(string)`.
+- **Json.cs**: Hand-rolled serializer. `Json.Object(Dictionary<string,object>)` and `Json.Array(List<string>)` and `Json.Quote(string)`. Also has `Json.ReadBody(req)` and `Json.ParseFlat(json)` for reading flat-string-valued JSON request bodies.
+- **MainThreadDispatcher.cs**: `[InitializeOnLoad]` class that hooks `EditorApplication.update`. Provides `Execute<T>(Func<T>)` to run code on Unity's main thread from background HTTP handler threads. Required for any write operation (SerializedObject, scene mutation). Uses `ConcurrentQueue` + `ManualResetEventSlim` for cross-thread signaling with a 5-second timeout.
 
 ### CI/CD: vpm-release.yml
 
