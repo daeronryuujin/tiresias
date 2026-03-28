@@ -13,7 +13,7 @@ namespace Tiresias
 
             // CORS headers so browser-based tools can also hit this
             res.Headers.Add("Access-Control-Allow-Origin", "*");
-            res.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            res.Headers.Add("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
             res.Headers.Add("Access-Control-Allow-Headers", "Content-Type");
 
             if (req.HttpMethod == "OPTIONS")
@@ -75,7 +75,8 @@ namespace Tiresias
                         break;
 
                     default:
-                        ResponseHelper.Send(res, 404, $"{{\"error\":\"Unknown route: {path}\"}}");
+                        if (!TryHandleParameterizedRoute(req, res, path))
+                            ResponseHelper.Send(res, 404, $"{{\"error\":\"Unknown route: {path}\"}}");
                         break;
                 }
             }
@@ -84,6 +85,32 @@ namespace Tiresias
                 UnityEngine.Debug.LogError($"[Tiresias] Handler exception: {ex}");
                 ResponseHelper.Send(res, 500, $"{{\"error\":\"{ex.Message}\"}}");
             }
+        }
+
+        /// <summary>
+        /// Handles parameterized routes that can't be matched by exact switch cases.
+        /// Returns true if the route was handled, false if it should 404.
+        /// </summary>
+        private static bool TryHandleParameterizedRoute(HttpListenerRequest req, HttpListenerResponse res, string path)
+        {
+            // PUT /api/scene/{gameObjectName}/components/{componentType}/fields/{fieldName}
+            if (req.HttpMethod == "PUT" && path.StartsWith("/api/scene/"))
+            {
+                var segments = path.Split('/');
+                // Expected: ["", "api", "scene", "{name}", "components", "{type}", "fields", "{field}"]
+                if (segments.Length == 8
+                    && segments[1] == "api" && segments[2] == "scene"
+                    && segments[4] == "components" && segments[6] == "fields")
+                {
+                    var goName = Uri.UnescapeDataString(segments[3]);
+                    var compType = Uri.UnescapeDataString(segments[5]);
+                    var fieldName = Uri.UnescapeDataString(segments[7]);
+                    TiresiasHandlers.SetFieldReference(req, res, goName, compType, fieldName);
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }
