@@ -86,9 +86,10 @@ curl -X PUT "http://localhost:7890/api/scene/Canvas%2FPanel/components/MyScript/
 
 - **GitHub**: `daeronryuujin/tiresias`
 - **Package ID**: `com.daeronryuujin.tiresias`
-- **Current version**: See `package.json` → `version` field (was 1.4.0 as of last session)
+- **Current version**: See `package.json` → `version` field (was 1.5.0 as of last session)
 - **Default branch**: `main` (note: local repo also has `master` — always push to `main`)
 - **VPM listing URL**: `https://daeronryuujin.github.io/tiresias/index.json`
+- **Versioning convention**: Semver — patch (1.5.x) for most changes (bug fixes, small tweaks, doc updates, incremental endpoint additions); minor (1.x.0) for notable features or breaking changes; major (x.0.0) for breaking API contract changes. Default to patch bumps.
 
 ### File Layout
 
