@@ -3,7 +3,7 @@
 ## What Tiresias Is
 
 Tiresias is a lightweight Unity Editor plugin that runs a local HTTP REST API on **`http://localhost:7890`**.
-It gives you live read access to the Unity scene, asset list, and compiler state — use it to orient yourself before writing or modifying code.
+It gives you live read/write access to the Unity scene, asset list, and compiler state — use it to orient yourself before writing or modifying code, and to directly mutate the scene without touching `.unity` files.
 
 ## When to Use It
 
@@ -11,8 +11,11 @@ It gives you live read access to the Unity scene, asset list, and compiler state
 - Before placing or referencing a GameObject: query `/scene/hierarchy` to confirm it exists and get its exact name.
 - Before writing a script that references components: query `/scene/object?name=<NAME>` to see what components are already present.
 - If something breaks after you make a change: check `/compiler/errors` again for new errors.
+- To add GameObjects, components, set fields, or wire up references: use the write endpoints below instead of editing `.unity` files by hand.
 
 ## Endpoint Reference
+
+### Read (v1.0+)
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -25,7 +28,38 @@ It gives you live read access to the Unity scene, asset list, and compiler state
 | `/assets/prefabs` | GET | All prefab paths under Assets/ |
 | `/compiler/status` | GET | isCompiling, isUpdating booleans |
 | `/compiler/errors` | GET | Array of {file, line, message} for compile errors |
-| `/api/scene/{name}/components/{type}/fields/{field}` | PUT | Set a serialized object reference field on a component |
+
+### Write (v1.6+)
+
+| Endpoint | Method | Body | Description |
+|---|---|---|---|
+| `/api/scene/objects` | POST | `{"name":"Foo","parent":"ParentName"}` | Create a new empty GameObject. `parent` is optional. |
+| `/api/scene/{name}` | DELETE | — | Delete a GameObject by name. |
+| `/api/scene/{name}/active` | PUT | `{"active":true}` | Set active/inactive. |
+| `/api/scene/{name}/parent` | PUT | `{"parent":"NewParent"}` | Reparent (omit or null `parent` to unparent). |
+| `/api/scene/{name}/transform` | PUT | `{"px":0,"py":1,"pz":0,"rx":0,"ry":0,"rz":0,"sx":1,"sy":1,"sz":1}` | Set local position/rotation/scale. All fields optional. |
+| `/api/scene/{name}/components` | POST | `{"type":"MyScript"}` | Add a component by type name. Handles UdonSharp behaviours automatically. |
+| `/api/scene/{name}/components/{type}` | DELETE | — | Remove a component by type name. |
+| `/api/scene/{name}/components/{type}/fields/{field}` | PUT | see below | Set a serialized field (reference or value). |
+| `/api/assets/prefabs/{path}` | POST | `{"parent":"ParentName","name":"Override"}` | Instantiate a prefab from Assets/. `parent` and `name` are optional. |
+
+#### SetField body formats
+
+```json
+// Object reference (GameObject)
+{"referenceType":"gameObject","targetGameObjectName":"VideoPlayer"}
+
+// Object reference (Component)
+{"referenceType":"component","targetGameObjectName":"VideoPlayer","targetComponentType":"MeshRenderer"}
+
+// Value types
+{"valueType":"float","value":"1.5"}
+{"valueType":"int","value":"42"}
+{"valueType":"bool","value":"true"}
+{"valueType":"string","value":"Hello"}
+{"valueType":"vector3","x":"0","y":"1","z":"0"}
+{"valueType":"color","r":"1","g":"0.5","b":"0","a":"1"}
+```
 
 ## Usage Pattern (bash)
 
@@ -39,18 +73,33 @@ curl http://localhost:7890/scene/hierarchy
 # What components does VideoPlayer have?
 curl "http://localhost:7890/scene/object?name=VideoPlayer"
 
-# What scripts exist?
-curl http://localhost:7890/assets/scripts
-
-# Set a serialized field reference (e.g. assign a GameObject to a script field)
-curl -X PUT "http://localhost:7890/api/scene/Canvas%2FPanel/components/MyScript/fields/targetRef" \
+# Create a new empty GameObject under UI
+curl -X POST http://localhost:7890/api/scene/objects \
   -H "Content-Type: application/json" \
-  -d '{"referenceType":"gameObject","targetGameObjectName":"VideoPlayer"}'
+  -d '{"name":"ScorePanel","parent":"UI"}'
 
-# Set a component reference (e.g. assign a specific component)
-curl -X PUT "http://localhost:7890/api/scene/Canvas%2FPanel/components/MyScript/fields/playerRenderer" \
+# Add a UdonSharp component to it
+curl -X POST "http://localhost:7890/api/scene/ScorePanel/components" \
   -H "Content-Type: application/json" \
-  -d '{"referenceType":"component","targetGameObjectName":"VideoPlayer","targetComponentType":"MeshRenderer"}'
+  -d '{"type":"ScoreManager"}'
+
+# Wire a field reference
+curl -X PUT "http://localhost:7890/api/scene/ScorePanel/components/ScoreManager/fields/videoPlayer" \
+  -H "Content-Type: application/json" \
+  -d '{"referenceType":"component","targetGameObjectName":"TV","targetComponentType":"TVManager"}'
+
+# Set a value field
+curl -X PUT "http://localhost:7890/api/scene/ScorePanel/components/ScoreManager/fields/maxScore" \
+  -H "Content-Type: application/json" \
+  -d '{"valueType":"int","value":"100"}'
+
+# Instantiate a prefab
+curl -X POST "http://localhost:7890/api/assets/prefabs/Prefabs%2FScoreBoard" \
+  -H "Content-Type: application/json" \
+  -d '{"parent":"UI"}'
+
+# Delete a GameObject
+curl -X DELETE "http://localhost:7890/api/scene/OldPanel"
 ```
 
 ## Hard Rules for This Project
