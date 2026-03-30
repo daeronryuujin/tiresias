@@ -12,6 +12,14 @@ namespace Tiresias
 {
     public static class TiresiasHandlers
     {
+        // ── /api/assets/refresh ───────────────────────────────────────────────
+
+        public static void AssetRefresh(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            MainThreadDispatcher.Execute(() => { AssetDatabase.Refresh(); return 0; });
+            ResponseHelper.Send(res, 200, "{\"status\":\"ok\"}");
+        }
+
         // ── /status ───────────────────────────────────────────────────────────
 
         public static void Status(HttpListenerRequest req, HttpListenerResponse res)

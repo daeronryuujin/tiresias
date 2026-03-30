@@ -95,6 +95,13 @@ namespace Tiresias
         {
             var method = req.HttpMethod;
 
+            // POST /api/assets/refresh
+            if (method == "POST" && path == "/api/assets/refresh")
+            {
+                TiresiasHandlers.AssetRefresh(req, res);
+                return true;
+            }
+
             // POST /api/scene/objects
             if (method == "POST" && path == "/api/scene/objects")
             {

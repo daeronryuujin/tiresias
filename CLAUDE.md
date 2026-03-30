@@ -42,6 +42,7 @@ It gives you live read/write access to the Unity scene, asset list, and compiler
 | `/api/scene/{name}/components/{type}` | DELETE | — | Remove a component by type name. |
 | `/api/scene/{name}/components/{type}/fields/{field}` | PUT | see below | Set a serialized field (reference or value). |
 | `/api/assets/prefabs/{path}` | POST | `{"parent":"ParentName","name":"Override"}` | Instantiate a prefab from Assets/. `parent` and `name` are optional. |
+| `/api/assets/refresh` | POST | — | Trigger `AssetDatabase.Refresh()` — picks up new files without Ctrl+R. |
 
 #### SetField body formats
 
