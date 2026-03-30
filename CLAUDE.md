@@ -19,15 +19,29 @@ It gives you live read/write access to the Unity scene, asset list, and compiler
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/status` | GET | Server status, Unity version, isPlaying, isCompiling |
+| `/status` | GET | Server status, Unity version, isPlaying, isCompiling, port |
 | `/scene` | GET | Active scene name, path, dirty state |
 | `/scene/hierarchy` | GET | Full scene tree. Optional `?depth=N` (default 3) |
 | `/scene/object` | GET | Component detail for a single object. Required `?name=<GameObject name>` |
 | `/scene/selected` | GET | Names of currently selected GameObjects |
 | `/assets/scripts` | GET | All .cs file paths under Assets/ |
 | `/assets/prefabs` | GET | All prefab paths under Assets/ |
-| `/compiler/status` | GET | isCompiling, isUpdating booleans |
+| `/assets/search` | GET | Search assets. `?query=AudioLink&type=Material&folder=Assets` |
+| `/assets/dependencies` | GET | Asset dependency graph. `?path=Assets/Prefabs/X.prefab` |
+| `/compiler/status` | GET | isCompiling, isUpdating, lastCompileAt, errorCount, warningCount |
 | `/compiler/errors` | GET | Array of {file, line, message} for compile errors |
+| `/build/stats` | GET | Scene performance stats: triangles, vertices, materials, textures, lights |
+| `/batch` | POST | Execute multiple requests in one round-trip (max 10) |
+
+### Port Discovery (v1.7+)
+
+Tiresias tries ports 7890-7899. The actual port is written to `Library/Tiresias.port`.
+
+```bash
+# Auto-discover port
+PORT=$(cat Library/Tiresias.port 2>/dev/null || echo 7890)
+curl http://localhost:$PORT/status
+```
 
 ### Write (v1.6+)
 

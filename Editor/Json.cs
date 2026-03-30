@@ -149,6 +149,54 @@ namespace Tiresias
         {
             while (i < s.Length && char.IsWhiteSpace(s[i])) i++;
         }
+
+        /// <summary>
+        /// Parse a JSON array of {method, path} objects for the /batch endpoint.
+        /// e.g. [{"method":"GET","path":"/status"},{"method":"GET","path":"/compiler/errors"}]
+        /// </summary>
+        public static List<(string method, string path)> ParseBatchRequests(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            json = json.Trim();
+            if (json.Length < 2 || json[0] != '[') return null;
+
+            var results = new List<(string, string)>();
+            int i = 1; // skip '['
+
+            while (i < json.Length)
+            {
+                SkipWhitespace(json, ref i);
+                if (i >= json.Length || json[i] == ']') break;
+
+                if (json[i] == '{')
+                {
+                    // Find matching close brace
+                    int depth = 0;
+                    int objStart = i;
+                    while (i < json.Length)
+                    {
+                        if (json[i] == '{') depth++;
+                        else if (json[i] == '}') { depth--; if (depth == 0) { i++; break; } }
+                        i++;
+                    }
+                    var objStr = json.Substring(objStart, i - objStart);
+                    var fields = ParseFlat(objStr);
+                    fields.TryGetValue("method", out var method);
+                    fields.TryGetValue("path", out var path);
+                    if (!string.IsNullOrEmpty(path))
+                        results.Add((method ?? "GET", path));
+                }
+                else
+                {
+                    i++;
+                }
+
+                SkipWhitespace(json, ref i);
+                if (i < json.Length && json[i] == ',') i++;
+            }
+
+            return results;
+        }
     }
 
     /// <summary>

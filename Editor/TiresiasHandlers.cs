@@ -27,11 +27,12 @@ namespace Tiresias
             var json = MainThreadDispatcher.Execute(() => Json.Object(new Dictionary<string, object>
             {
                 ["status"]       = "ok",
-                ["version"]      = "1.0.0",
+                ["version"]      = "1.7.0",
                 ["unityVersion"] = Application.unityVersion,
                 ["projectPath"]  = System.IO.Path.GetFileName(Application.dataPath.Replace("/Assets", "")),
                 ["isPlaying"]    = EditorApplication.isPlaying,
                 ["isCompiling"]  = EditorApplication.isCompiling,
+                ["port"]         = TiresiasServer.BoundPort,
             }));
             ResponseHelper.Send(res, 200, json);
         }
@@ -87,7 +88,7 @@ namespace Tiresias
                 ["active"]     = go.activeSelf,
                 ["tag"]        = go.tag,
                 ["layer"]      = LayerMask.LayerToName(go.layer),
-                ["components"] = "[" + string.Join(",", components) + "]",
+                ["components"] = new RawJson("[" + string.Join(",", components) + "]"),
                 ["childCount"] = go.transform.childCount,
             };
 
@@ -96,7 +97,7 @@ namespace Tiresias
                 var children = new List<string>();
                 for (int i = 0; i < go.transform.childCount; i++)
                     children.Add(SerializeGameObject(go.transform.GetChild(i).gameObject, maxDepth, currentDepth + 1));
-                fields["children"] = "[" + string.Join(",", children) + "]";
+                fields["children"] = new RawJson("[" + string.Join(",", children) + "]");
             }
 
             return Json.Object(fields);
@@ -112,7 +113,7 @@ namespace Tiresias
             var (code, json) = MainThreadDispatcher.Execute(() =>
             {
                 var go = GameObject.Find(name);
-                if (go == null) return (404, $"{{\"error\":\"No GameObject named '{name}'\"}}");
+                if (go == null) return (404, $"{{\"error\":\"No GameObject named '{EscJson(name)}'\"}}");
 
                 var t = go.transform;
                 var components = go.GetComponents<Component>()
@@ -129,11 +130,11 @@ namespace Tiresias
                     ["active"]     = go.activeSelf,
                     ["tag"]        = go.tag,
                     ["layer"]      = LayerMask.LayerToName(go.layer),
-                    ["position"]   = new RawJson(Vec3(t.position)),
-                    ["rotation"]   = new RawJson(Vec3(t.eulerAngles)),
+                    ["position"]   = new RawJson(Vec3(t.localPosition)),
+                    ["rotation"]   = new RawJson(Vec3(t.localEulerAngles)),
                     ["scale"]      = new RawJson(Vec3(t.localScale)),
                     ["parent"]     = t.parent != null ? t.parent.name : null,
-                    ["components"] = "[" + string.Join(",", components) + "]",
+                    ["components"] = new RawJson("[" + string.Join(",", components) + "]"),
                 }));
             });
             ResponseHelper.Send(res, code, json);
@@ -178,14 +179,106 @@ namespace Tiresias
             ResponseHelper.Send(res, 200, json);
         }
 
+        // ── /assets/search ───────────────────────────────────────────────────
+        // GET /assets/search?query=AudioLink&type=Material&folder=Assets
+
+        public static void AssetSearch(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var query  = req.QueryString["query"] ?? "";
+            var type   = req.QueryString["type"];
+            var folder = req.QueryString["folder"] ?? "Assets";
+
+            if (string.IsNullOrEmpty(query) && string.IsNullOrEmpty(type))
+            {
+                ResponseHelper.Send(res, 400, "{\"error\":\"Provide ?query= and/or ?type= parameter\"}");
+                return;
+            }
+
+            var json = MainThreadDispatcher.Execute(() =>
+            {
+                var filter = query;
+                if (!string.IsNullOrEmpty(type)) filter += $" t:{type}";
+                filter = filter.Trim();
+
+                var guids = AssetDatabase.FindAssets(filter, new[] { folder });
+                var results = new List<string>();
+                int limit = 100;
+
+                foreach (var guid in guids)
+                {
+                    if (results.Count >= limit) break;
+                    var path = AssetDatabase.GUIDToAssetPath(guid);
+                    var assetType = AssetDatabase.GetMainAssetTypeAtPath(path);
+                    results.Add(Json.Object(new Dictionary<string, object>
+                    {
+                        ["path"] = path,
+                        ["type"] = assetType?.Name ?? "Unknown",
+                        ["guid"] = guid,
+                    }));
+                }
+
+                return Json.Object(new Dictionary<string, object>
+                {
+                    ["query"]   = filter,
+                    ["count"]   = results.Count,
+                    ["results"] = new RawJson("[" + string.Join(",", results) + "]"),
+                });
+            });
+            ResponseHelper.Send(res, 200, json);
+        }
+
+        // ── /assets/dependencies ──────────────────────────────────────────────
+        // GET /assets/dependencies?path=Assets/Prefabs/MyPrefab.prefab
+
+        public static void AssetDependencies(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var assetPath = req.QueryString["path"];
+            if (string.IsNullOrEmpty(assetPath))
+            {
+                ResponseHelper.Send(res, 400, "{\"error\":\"Missing ?path= parameter\"}");
+                return;
+            }
+
+            var json = MainThreadDispatcher.Execute(() =>
+            {
+                var deps = AssetDatabase.GetDependencies(assetPath, true);
+                var results = deps
+                    .Where(d => d != assetPath) // exclude self
+                    .Select(d =>
+                    {
+                        var t = AssetDatabase.GetMainAssetTypeAtPath(d);
+                        return Json.Object(new Dictionary<string, object>
+                        {
+                            ["path"] = d,
+                            ["type"] = t?.Name ?? "Unknown",
+                        });
+                    })
+                    .ToList();
+
+                return Json.Object(new Dictionary<string, object>
+                {
+                    ["asset"]        = assetPath,
+                    ["count"]        = results.Count,
+                    ["dependencies"] = new RawJson("[" + string.Join(",", results) + "]"),
+                });
+            });
+            ResponseHelper.Send(res, 200, json);
+        }
+
         // ── /compiler/status ─────────────────────────────────────────────────
+
+        private static string _lastCompileTime = "";
+        private static int _lastWarningCount = 0;
 
         public static void CompilerStatus(HttpListenerRequest req, HttpListenerResponse res)
         {
             var json = MainThreadDispatcher.Execute(() => Json.Object(new Dictionary<string, object>
             {
-                ["isCompiling"] = EditorApplication.isCompiling,
-                ["isUpdating"]  = EditorApplication.isUpdating,
+                ["isCompiling"]    = EditorApplication.isCompiling,
+                ["isUpdating"]     = EditorApplication.isUpdating,
+                ["lastCompileAt"]  = _lastCompileTime,
+                ["errorCount"]     = _compilerErrors.Count,
+                ["warningCount"]   = _lastWarningCount,
             }));
             ResponseHelper.Send(res, 200, json);
         }
@@ -200,23 +293,43 @@ namespace Tiresias
         {
             if (_hooked) return;
             _hooked = true;
-            CompilationPipeline.compilationStarted += _ => { _compilerErrors.Clear(); };
+            CompilationPipeline.compilationStarted += _ =>
+            {
+                _compilerErrors.Clear();
+                _lastWarningCount = 0;
+            };
             CompilationPipeline.assemblyCompilationFinished += (path, messages) =>
             {
                 foreach (var m in messages)
                 {
-                    if (m.type != CompilerMessageType.Error) continue;
-                    _compilerErrors.Add(new Dictionary<string, object>
+                    if (m.type == CompilerMessageType.Error)
                     {
-                        ["file"] = m.file, ["line"] = m.line, ["message"] = m.message,
-                    });
+                        _compilerErrors.Add(new Dictionary<string, object>
+                        {
+                            ["file"] = m.file, ["line"] = m.line, ["message"] = m.message,
+                        });
+                    }
+                    else if (m.type == CompilerMessageType.Warning)
+                    {
+                        _lastWarningCount++;
+                    }
                 }
+            };
+            CompilationPipeline.compilationFinished += _ =>
+            {
+                _lastCompileTime = DateTime.Now.ToString("O");
             };
         }
 
         public static void CompilerErrors(HttpListenerRequest req, HttpListenerResponse res)
         {
-            ResponseHelper.Send(res, 200, "[" + string.Join(",", _compilerErrors.Select(e => Json.Object(e))) + "]");
+            ResponseHelper.Send(res, 200, GetCompilerErrorsJson());
+        }
+
+        /// <summary>Direct access for batch endpoint.</summary>
+        public static string GetCompilerErrorsJson()
+        {
+            return "[" + string.Join(",", _compilerErrors.Select(e => Json.Object(e))) + "]";
         }
 
         // ── /console/errors ───────────────────────────────────────────────────
@@ -227,13 +340,127 @@ namespace Tiresias
                 "{\"note\":\"Unity has no public API for reading past console logs. Use /compiler/errors for compilation issues.\",\"entries\":[]}");
         }
 
+        // ── /build/stats ──────────────────────────────────────────────────────
+        // GET /build/stats — scene performance statistics
+
+        public static void BuildStats(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var json = MainThreadDispatcher.Execute(() =>
+            {
+                var renderers = UnityEngine.Object.FindObjectsOfType<MeshRenderer>();
+                var skinnedRenderers = UnityEngine.Object.FindObjectsOfType<SkinnedMeshRenderer>();
+                var meshFilters = UnityEngine.Object.FindObjectsOfType<MeshFilter>();
+
+                long totalTris = 0;
+                long totalVerts = 0;
+                var materials = new HashSet<Material>();
+                var textures = new HashSet<Texture>();
+
+                foreach (var mf in meshFilters)
+                {
+                    if (mf.sharedMesh != null)
+                    {
+                        totalTris += mf.sharedMesh.triangles.Length / 3;
+                        totalVerts += mf.sharedMesh.vertexCount;
+                    }
+                }
+
+                foreach (var sr in skinnedRenderers)
+                {
+                    if (sr.sharedMesh != null)
+                    {
+                        totalTris += sr.sharedMesh.triangles.Length / 3;
+                        totalVerts += sr.sharedMesh.vertexCount;
+                    }
+                }
+
+                foreach (var r in renderers)
+                    foreach (var m in r.sharedMaterials)
+                        if (m != null) materials.Add(m);
+
+                foreach (var r in skinnedRenderers)
+                    foreach (var m in r.sharedMaterials)
+                        if (m != null) materials.Add(m);
+
+                foreach (var mat in materials)
+                {
+                    var shader = mat.shader;
+                    int propCount = ShaderUtil.GetPropertyCount(shader);
+                    for (int i = 0; i < propCount; i++)
+                    {
+                        if (ShaderUtil.GetPropertyType(shader, i) == ShaderUtil.ShaderPropertyType.TexEnv)
+                        {
+                            var propName = ShaderUtil.GetPropertyName(shader, i);
+                            var tex = mat.GetTexture(propName);
+                            if (tex != null) textures.Add(tex);
+                        }
+                    }
+                }
+
+                var lights = UnityEngine.Object.FindObjectsOfType<Light>();
+                var audioSources = UnityEngine.Object.FindObjectsOfType<AudioSource>();
+                var particleSystems = UnityEngine.Object.FindObjectsOfType<ParticleSystem>();
+
+                return Json.Object(new Dictionary<string, object>
+                {
+                    ["triangles"]        = totalTris,
+                    ["vertices"]         = totalVerts,
+                    ["meshRenderers"]    = renderers.Length,
+                    ["skinnedRenderers"] = skinnedRenderers.Length,
+                    ["materials"]        = materials.Count,
+                    ["textures"]         = textures.Count,
+                    ["lights"]           = lights.Length,
+                    ["audioSources"]     = audioSources.Length,
+                    ["particleSystems"]  = particleSystems.Length,
+                });
+            });
+            ResponseHelper.Send(res, 200, json);
+        }
+
+        // ── POST /batch ───────────────────────────────────────────────────────
+        // Body: [{"method":"GET","path":"/scene/hierarchy"},{"method":"GET","path":"/compiler/errors"}]
+
+        public static void Batch(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            string body;
+            try { body = Json.ReadBody(req); }
+            catch { ResponseHelper.Send(res, 400, "{\"error\":\"Could not read request body\"}"); return; }
+
+            var requests = Json.ParseBatchRequests(body);
+            if (requests == null || requests.Count == 0)
+            {
+                ResponseHelper.Send(res, 400, "{\"error\":\"Body must be a JSON array of {method, path} objects\"}");
+                return;
+            }
+
+            if (requests.Count > 10)
+            {
+                ResponseHelper.Send(res, 400, "{\"error\":\"Maximum 10 requests per batch\"}");
+                return;
+            }
+
+            var results = new List<string>();
+            foreach (var r in requests)
+            {
+                var capture = new ResponseCapture();
+                var fakeReq = new BatchRequest(r.method, r.path);
+                TiresiasRouter.HandleDirect(fakeReq.Method, fakeReq.Path, fakeReq.QueryString, req, capture);
+                results.Add(Json.Object(new Dictionary<string, object>
+                {
+                    ["path"]       = r.path,
+                    ["statusCode"] = capture.StatusCode,
+                    ["body"]       = new RawJson(capture.Body ?? "null"),
+                }));
+            }
+
+            ResponseHelper.Send(res, 200, "[" + string.Join(",", results) + "]");
+        }
+
         // =====================================================================
         // WRITE ENDPOINTS — all execute on Unity main thread via Dispatcher
         // =====================================================================
 
         // ── POST /api/scene/objects ───────────────────────────────────────────
-        // Body: { "name":"MyObject", "parent":"KaraokeWorld",
-        //         "px":"0","py":"0","pz":"0" }  (parent + position optional)
 
         public static void CreateGameObject(HttpListenerRequest req, HttpListenerResponse res)
         {
@@ -276,7 +503,6 @@ namespace Tiresias
         }
 
         // ── POST /api/scene/{name}/components ─────────────────────────────────
-        // Body: { "componentType": "WorldModeManager" }
 
         public static void AddComponent(HttpListenerRequest req, HttpListenerResponse res, string gameObjectName)
         {
@@ -295,7 +521,6 @@ namespace Tiresias
 
                 Component comp = null;
 
-                // Prefer UdonSharp-aware API for UdonSharpBehaviours
                 var udonBase = FindTypeByFullName("UdonSharp.UdonSharpBehaviour");
                 if (udonBase != null && udonBase.IsAssignableFrom(type))
                 {
@@ -320,8 +545,6 @@ namespace Tiresias
         }
 
         // ── PUT /api/scene/{name}/transform ───────────────────────────────────
-        // Body: any subset of px/py/pz (position), rx/ry/rz (euler), sx/sy/sz (scale).
-        //       "space":"local" uses local space (default: world)
 
         public static void SetTransform(HttpListenerRequest req, HttpListenerResponse res, string gameObjectName)
         {
@@ -366,15 +589,14 @@ namespace Tiresias
                 return HR.Ok(Json.Object(new Dictionary<string, object>
                 {
                     ["gameObject"] = gameObjectName,
-                    ["position"]   = new RawJson(Vec3(t.position)),
-                    ["rotation"]   = new RawJson(Vec3(t.eulerAngles)),
+                    ["position"]   = new RawJson(Vec3(t.localPosition)),
+                    ["rotation"]   = new RawJson(Vec3(t.localEulerAngles)),
                     ["scale"]      = new RawJson(Vec3(t.localScale)),
                 }));
             });
         }
 
         // ── PUT /api/scene/{name}/active ──────────────────────────────────────
-        // Body: { "active": "true" }
 
         public static void SetActive(HttpListenerRequest req, HttpListenerResponse res, string gameObjectName)
         {
@@ -413,8 +635,6 @@ namespace Tiresias
         }
 
         // ── PUT /api/scene/{name}/parent ──────────────────────────────────────
-        // Body: { "parent": "KaraokeWorld", "worldPositionStays": "true" }
-        //       parent: "" or absent = detach to scene root
 
         public static void SetParent(HttpListenerRequest req, HttpListenerResponse res, string gameObjectName)
         {
@@ -447,8 +667,6 @@ namespace Tiresias
         }
 
         // ── POST /api/assets/prefabs/{path} ───────────────────────────────────
-        // Body: { "parent":"KaraokeWorld", "name":"OverrideName",
-        //         "px":"0","py":"0","pz":"0" }  (all optional)
 
         public static void InstantiatePrefab(HttpListenerRequest req, HttpListenerResponse res, string prefabPath)
         {
@@ -514,17 +732,6 @@ namespace Tiresias
         }
 
         // ── PUT /api/scene/{name}/components/{type}/fields/{field} ────────────
-        //
-        // Object reference:
-        //   { "referenceType": "gameObject"|"component",
-        //     "targetGameObjectName": "...",
-        //     "targetComponentType": "..." }
-        //
-        // Primitive value:
-        //   { "valueType": "float"|"int"|"bool"|"string"|"vector3"|"color",
-        //     "value": "15.0"                       (float / int / bool / string)
-        //     "x":"0","y":"1","z":"0"               (vector3)
-        //     "r":"1","g":"0","b":"0","a":"1"        (color) }
 
         public static void SetField(HttpListenerRequest req, HttpListenerResponse res,
             string gameObjectName, string componentType, string fieldName)
@@ -572,7 +779,7 @@ namespace Tiresias
         // Main-thread implementations
         // ─────────────────────────────────────────────────────────────────────
 
-        private struct HR  // HandlerResult — keeps call sites terse
+        private struct HR
         {
             public int    StatusCode;
             public string Json;
@@ -657,26 +864,20 @@ namespace Tiresias
                     case "float":
                         if (!TryF(value, out float fv)) return HR.Error(400, $"Cannot parse '{value}' as float");
                         prop.floatValue = fv; break;
-
                     case "int":
                         if (!int.TryParse(value, out int iv)) return HR.Error(400, $"Cannot parse '{value}' as int");
                         prop.intValue = iv; break;
-
                     case "bool":
                         prop.boolValue = value != null && (value.ToLower() == "true" || value == "1"); break;
-
                     case "string":
                         prop.stringValue = value ?? ""; break;
-
                     case "vector3":
                         TryF(vx, out float x); TryF(vy, out float y); TryF(vz, out float z);
                         prop.vector3Value = new Vector3(x, y, z); break;
-
                     case "color":
                         TryF(vr, out float r); TryF(vg, out float g); TryF(vb, out float b);
                         float a = 1f; if (va != null) TryF(va, out a);
                         prop.colorValue = new Color(r, g, b, a); break;
-
                     default:
                         return HR.Error(400,
                             $"Unknown valueType '{valType}'. Supported: float, int, bool, string, vector3, color");
@@ -769,6 +970,56 @@ namespace Tiresias
                 System.Globalization.CultureInfo.InvariantCulture, out result);
         }
 
-        private static string Vec3(Vector3 v) => $"{{\"x\":{v.x:F3},\"y\":{v.y:F3},\"z\":{v.z:F3}}}";
+        private static string Vec3(Vector3 v)
+        {
+            return $"{{\"x\":{v.x.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}" +
+                   $",\"y\":{v.y.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}" +
+                   $",\"z\":{v.z.ToString("F3", System.Globalization.CultureInfo.InvariantCulture)}}}";
+        }
+
+        private static string EscJson(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Batch support types
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>Captures response data from an internal handler call (for /batch).</summary>
+    internal class ResponseCapture
+    {
+        public int StatusCode = 200;
+        public string Body = "null";
+
+        public void Send(int code, string json)
+        {
+            StatusCode = code;
+            Body = json;
+        }
+    }
+
+    /// <summary>Minimal request representation for batch sub-requests.</summary>
+    internal class BatchRequest
+    {
+        public string Method { get; }
+        public string Path { get; }
+        public System.Collections.Specialized.NameValueCollection QueryString { get; }
+
+        public BatchRequest(string method, string path)
+        {
+            Method = method?.ToUpper() ?? "GET";
+            // Split path and query string
+            var parts = path.Split(new[] { '?' }, 2);
+            Path = parts[0];
+            QueryString = new System.Collections.Specialized.NameValueCollection();
+            if (parts.Length > 1)
+            {
+                foreach (var pair in parts[1].Split('&'))
+                {
+                    var kv = pair.Split(new[] { '=' }, 2);
+                    if (kv.Length == 2)
+                        QueryString[Uri.UnescapeDataString(kv[0])] = Uri.UnescapeDataString(kv[1]);
+                }
+            }
+        }
     }
 }

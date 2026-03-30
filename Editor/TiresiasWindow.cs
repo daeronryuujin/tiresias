@@ -9,7 +9,7 @@ namespace Tiresias
         public static void ShowWindow()
         {
             var win = GetWindow<TiresiasWindow>("Tiresias");
-            win.minSize = new Vector2(260, 140);
+            win.minSize = new Vector2(280, 200);
             win.Show();
         }
 
@@ -24,8 +24,18 @@ namespace Tiresias
 
             var prevColor = GUI.color;
             GUI.color = statusColor;
-            GUILayout.Label(running ? $"● Listening on :{TiresiasServer.PORT}" : "● Stopped", EditorStyles.boldLabel);
+            GUILayout.Label(running
+                ? $"● Listening on port {TiresiasServer.BoundPort}"
+                : "● Stopped",
+                EditorStyles.boldLabel);
             GUI.color = prevColor;
+
+            if (running && TiresiasServer.BoundPort != TiresiasServer.PORT_MIN)
+            {
+                EditorGUILayout.HelpBox(
+                    $"Port {TiresiasServer.PORT_MIN} was busy. Using fallback port {TiresiasServer.BoundPort}.",
+                    MessageType.Warning);
+            }
 
             GUILayout.Space(8);
 
@@ -42,18 +52,28 @@ namespace Tiresias
 
             if (GUILayout.Button("Copy Base URL"))
             {
-                EditorGUIUtility.systemCopyBuffer = TiresiasServer.PREFIX;
-                Debug.Log($"[Tiresias] Copied: {TiresiasServer.PREFIX}");
+                var url = TiresiasServer.Prefix;
+                EditorGUIUtility.systemCopyBuffer = url;
+                Debug.Log($"[Tiresias] Copied: {url}");
             }
 
+            GUILayout.Space(8);
+            GUILayout.Label("Read Endpoints", EditorStyles.boldLabel);
+            GUILayout.Label("/status  /scene/hierarchy  /scene/object", EditorStyles.miniLabel);
+            GUILayout.Label("/assets/scripts  /assets/prefabs  /assets/search", EditorStyles.miniLabel);
+            GUILayout.Label("/assets/dependencies  /compiler/status  /compiler/errors", EditorStyles.miniLabel);
+            GUILayout.Label("/build/stats  /batch (POST)", EditorStyles.miniLabel);
+
             GUILayout.Space(4);
-            GUILayout.Label("Endpoints: /status  /scene/hierarchy  /scene/object", EditorStyles.miniLabel);
-            GUILayout.Label("/assets/scripts  /assets/prefabs  /compiler/errors", EditorStyles.miniLabel);
+            GUILayout.Label("Write Endpoints", EditorStyles.boldLabel);
+            GUILayout.Label("/api/scene/objects  /api/scene/{name}/components", EditorStyles.miniLabel);
+            GUILayout.Label("/api/scene/{name}/transform  /api/scene/{name}/active", EditorStyles.miniLabel);
+            GUILayout.Label("/api/assets/refresh  /api/assets/prefabs/{path}", EditorStyles.miniLabel);
         }
 
         private void OnInspectorUpdate()
         {
-            Repaint(); // Keep status indicator live
+            Repaint();
         }
     }
 }

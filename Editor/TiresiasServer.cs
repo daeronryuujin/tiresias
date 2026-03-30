@@ -1,6 +1,7 @@
 using UnityEditor;
 using UnityEngine;
 using System;
+using System.IO;
 using System.Net;
 using System.Threading;
 
@@ -13,8 +14,21 @@ namespace Tiresias
         private static Thread _listenerThread;
         private static bool _running = false;
 
+        public const int PORT_MIN = 7890;
+        public const int PORT_MAX = 7899;
+
+        /// <summary>The actual port we bound to (may differ from 7890 if that was busy).</summary>
+        public static int BoundPort { get; private set; } = PORT_MIN;
+
+        /// <summary>The full prefix including the actual bound port.</summary>
+        public static string Prefix => $"http://localhost:{BoundPort}/";
+
+        // Legacy compat — kept so existing code referencing PORT still compiles
         public const int PORT = 7890;
         public const string PREFIX = "http://localhost:7890/";
+
+        private static readonly string PortFilePath =
+            Path.Combine(Path.GetDirectoryName(Application.dataPath), "Library", "Tiresias.port");
 
         static TiresiasServer()
         {
@@ -26,22 +40,45 @@ namespace Tiresias
         {
             if (_running) return;
 
-            try
+            // Try ports 7890-7899 until one binds
+            for (int port = PORT_MIN; port <= PORT_MAX; port++)
             {
-                _listener = new HttpListener();
-                _listener.Prefixes.Add(PREFIX);
-                _listener.Start();
-                _running = true;
+                try
+                {
+                    var prefix = $"http://localhost:{port}/";
+                    _listener = new HttpListener();
+                    _listener.Prefixes.Add(prefix);
+                    _listener.Start();
+                    _running = true;
+                    BoundPort = port;
 
-                _listenerThread = new Thread(Listen) { IsBackground = true, Name = "TiresiasListener" };
-                _listenerThread.Start();
+                    _listenerThread = new Thread(Listen) { IsBackground = true, Name = "TiresiasListener" };
+                    _listenerThread.Start();
 
-                Debug.Log($"[Tiresias] Listening on {PREFIX}");
+                    WritePortFile(port);
+
+                    if (port == PORT_MIN)
+                        Debug.Log($"[Tiresias] Listening on {prefix}");
+                    else
+                        Debug.LogWarning($"[Tiresias] Port {PORT_MIN} was busy — listening on {prefix}");
+
+                    return;
+                }
+                catch (HttpListenerException)
+                {
+                    // Port in use, try next
+                    try { _listener?.Close(); } catch { }
+                    _listener = null;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[Tiresias] Failed to bind port {port}: {ex.Message}");
+                    try { _listener?.Close(); } catch { }
+                    _listener = null;
+                }
             }
-            catch (Exception ex)
-            {
-                Debug.LogError($"[Tiresias] Failed to start: {ex.Message}");
-            }
+
+            Debug.LogError($"[Tiresias] Could not bind any port in range {PORT_MIN}-{PORT_MAX}");
         }
 
         public static void Stop()
@@ -52,10 +89,12 @@ namespace Tiresias
             try
             {
                 _listener?.Stop();
+                _listener?.Close();
                 _listenerThread?.Abort();
             }
             catch { /* ignore abort exceptions */ }
 
+            DeletePortFile();
             Debug.Log("[Tiresias] Stopped.");
         }
 
@@ -70,7 +109,10 @@ namespace Tiresias
                 }
                 catch (HttpListenerException)
                 {
-                    // Listener was stopped, exit cleanly
+                    break;
+                }
+                catch (ObjectDisposedException)
+                {
                     break;
                 }
                 catch (Exception ex)
@@ -79,6 +121,22 @@ namespace Tiresias
                         Debug.LogError($"[Tiresias] Listener error: {ex.Message}");
                 }
             }
+        }
+
+        private static void WritePortFile(int port)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(PortFilePath);
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                File.WriteAllText(PortFilePath, port.ToString());
+            }
+            catch { /* Library/ might not be writable in rare cases */ }
+        }
+
+        private static void DeletePortFile()
+        {
+            try { if (File.Exists(PortFilePath)) File.Delete(PortFilePath); } catch { }
         }
 
         public static bool IsRunning => _running;
