@@ -1,6 +1,6 @@
 {
   "name": "com.daeronryuujin.tiresias",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "displayName": "Tiresias",
   "description": "Unity Editor REST API that exposes scene state, assets, and compiler status for AI code assistant integration.",
   "unity": "2022.3",

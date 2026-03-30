@@ -16,7 +16,7 @@ namespace Tiresias
 
         public static void Status(HttpListenerRequest req, HttpListenerResponse res)
         {
-            var json = Json.Object(new Dictionary<string, object>
+            var json = MainThreadDispatcher.Execute(() => Json.Object(new Dictionary<string, object>
             {
                 ["status"]       = "ok",
                 ["version"]      = "1.0.0",
@@ -24,7 +24,7 @@ namespace Tiresias
                 ["projectPath"]  = System.IO.Path.GetFileName(Application.dataPath.Replace("/Assets", "")),
                 ["isPlaying"]    = EditorApplication.isPlaying,
                 ["isCompiling"]  = EditorApplication.isCompiling,
-            });
+            }));
             ResponseHelper.Send(res, 200, json);
         }
 
@@ -32,15 +32,19 @@ namespace Tiresias
 
         public static void SceneInfo(HttpListenerRequest req, HttpListenerResponse res)
         {
-            var scene = SceneManager.GetActiveScene();
-            ResponseHelper.Send(res, 200, Json.Object(new Dictionary<string, object>
+            var json = MainThreadDispatcher.Execute(() =>
             {
-                ["name"]      = scene.name,
-                ["path"]      = scene.path,
-                ["isDirty"]   = scene.isDirty,
-                ["isLoaded"]  = scene.isLoaded,
-                ["rootCount"] = scene.rootCount,
-            }));
+                var scene = SceneManager.GetActiveScene();
+                return Json.Object(new Dictionary<string, object>
+                {
+                    ["name"]      = scene.name,
+                    ["path"]      = scene.path,
+                    ["isDirty"]   = scene.isDirty,
+                    ["isLoaded"]  = scene.isLoaded,
+                    ["rootCount"] = scene.rootCount,
+                });
+            });
+            ResponseHelper.Send(res, 200, json);
         }
 
         // ── /scene/hierarchy ─────────────────────────────────────────────────
@@ -52,10 +56,14 @@ namespace Tiresias
             if (depthParam != null) int.TryParse(depthParam, out maxDepth);
             maxDepth = Mathf.Clamp(maxDepth, 1, 10);
 
-            var scene = SceneManager.GetActiveScene();
-            var roots = scene.GetRootGameObjects();
-            var rootNodes = roots.Select(go => SerializeGameObject(go, maxDepth, 0)).ToList();
-            ResponseHelper.Send(res, 200, Json.Array(rootNodes));
+            var json = MainThreadDispatcher.Execute(() =>
+            {
+                var scene = SceneManager.GetActiveScene();
+                var roots = scene.GetRootGameObjects();
+                var rootNodes = roots.Select(go => SerializeGameObject(go, maxDepth, 0)).ToList();
+                return Json.Array(rootNodes);
+            });
+            ResponseHelper.Send(res, 200, json);
         }
 
         private static string SerializeGameObject(GameObject go, int maxDepth, int currentDepth)
@@ -93,68 +101,85 @@ namespace Tiresias
             var name = req.QueryString["name"];
             if (string.IsNullOrEmpty(name)) { ResponseHelper.Send(res, 400, "{\"error\":\"Missing ?name= parameter\"}"); return; }
 
-            var go = GameObject.Find(name);
-            if (go == null) { ResponseHelper.Send(res, 404, $"{{\"error\":\"No GameObject named '{name}'\"}}"); return; }
-
-            var t = go.transform;
-            var components = go.GetComponents<Component>()
-                .Where(c => c != null)
-                .Select(c => Json.Object(new Dictionary<string, object>
-                {
-                    ["type"]    = c.GetType().Name,
-                    ["enabled"] = (c is Behaviour b) ? (object)b.enabled : (object)true,
-                }));
-
-            ResponseHelper.Send(res, 200, Json.Object(new Dictionary<string, object>
+            var (code, json) = MainThreadDispatcher.Execute(() =>
             {
-                ["name"]       = go.name,
-                ["active"]     = go.activeSelf,
-                ["tag"]        = go.tag,
-                ["layer"]      = LayerMask.LayerToName(go.layer),
-                ["position"]   = new RawJson(Vec3(t.position)),
-                ["rotation"]   = new RawJson(Vec3(t.eulerAngles)),
-                ["scale"]      = new RawJson(Vec3(t.localScale)),
-                ["parent"]     = t.parent != null ? t.parent.name : null,
-                ["components"] = "[" + string.Join(",", components) + "]",
-            }));
+                var go = GameObject.Find(name);
+                if (go == null) return (404, $"{{\"error\":\"No GameObject named '{name}'\"}}");
+
+                var t = go.transform;
+                var components = go.GetComponents<Component>()
+                    .Where(c => c != null)
+                    .Select(c => Json.Object(new Dictionary<string, object>
+                    {
+                        ["type"]    = c.GetType().Name,
+                        ["enabled"] = (c is Behaviour b) ? (object)b.enabled : (object)true,
+                    }));
+
+                return (200, Json.Object(new Dictionary<string, object>
+                {
+                    ["name"]       = go.name,
+                    ["active"]     = go.activeSelf,
+                    ["tag"]        = go.tag,
+                    ["layer"]      = LayerMask.LayerToName(go.layer),
+                    ["position"]   = new RawJson(Vec3(t.position)),
+                    ["rotation"]   = new RawJson(Vec3(t.eulerAngles)),
+                    ["scale"]      = new RawJson(Vec3(t.localScale)),
+                    ["parent"]     = t.parent != null ? t.parent.name : null,
+                    ["components"] = "[" + string.Join(",", components) + "]",
+                }));
+            });
+            ResponseHelper.Send(res, code, json);
         }
 
         // ── /scene/selected ───────────────────────────────────────────────────
 
         public static void Selected(HttpListenerRequest req, HttpListenerResponse res)
         {
-            var selected = Selection.gameObjects;
-            if (selected.Length == 0) { ResponseHelper.Send(res, 200, "{\"selected\":[]}"); return; }
-            ResponseHelper.Send(res, 200, "{\"selected\":[" + string.Join(",", selected.Select(go => Json.Quote(go.name))) + "]}");
+            var json = MainThreadDispatcher.Execute(() =>
+            {
+                var selected = Selection.gameObjects;
+                if (selected.Length == 0) return "{\"selected\":[]}";
+                return "{\"selected\":[" + string.Join(",", selected.Select(go => Json.Quote(go.name))) + "]}";
+            });
+            ResponseHelper.Send(res, 200, json);
         }
 
         // ── /assets/scripts ───────────────────────────────────────────────────
 
         public static void ListScripts(HttpListenerRequest req, HttpListenerResponse res)
         {
-            var paths = AssetDatabase.FindAssets("t:MonoScript", new[] { "Assets" })
-                .Select(g => AssetDatabase.GUIDToAssetPath(g)).Where(p => p.EndsWith(".cs")).Select(p => Json.Quote(p)).ToList();
-            ResponseHelper.Send(res, 200, "[" + string.Join(",", paths) + "]");
+            var json = MainThreadDispatcher.Execute(() =>
+            {
+                var paths = AssetDatabase.FindAssets("t:MonoScript", new[] { "Assets" })
+                    .Select(g => AssetDatabase.GUIDToAssetPath(g)).Where(p => p.EndsWith(".cs")).Select(p => Json.Quote(p)).ToList();
+                return "[" + string.Join(",", paths) + "]";
+            });
+            ResponseHelper.Send(res, 200, json);
         }
 
         // ── /assets/prefabs ───────────────────────────────────────────────────
 
         public static void ListPrefabs(HttpListenerRequest req, HttpListenerResponse res)
         {
-            var paths = AssetDatabase.FindAssets("t:Prefab", new[] { "Assets" })
-                .Select(g => AssetDatabase.GUIDToAssetPath(g)).Select(p => Json.Quote(p)).ToList();
-            ResponseHelper.Send(res, 200, "[" + string.Join(",", paths) + "]");
+            var json = MainThreadDispatcher.Execute(() =>
+            {
+                var paths = AssetDatabase.FindAssets("t:Prefab", new[] { "Assets" })
+                    .Select(g => AssetDatabase.GUIDToAssetPath(g)).Select(p => Json.Quote(p)).ToList();
+                return "[" + string.Join(",", paths) + "]";
+            });
+            ResponseHelper.Send(res, 200, json);
         }
 
         // ── /compiler/status ─────────────────────────────────────────────────
 
         public static void CompilerStatus(HttpListenerRequest req, HttpListenerResponse res)
         {
-            ResponseHelper.Send(res, 200, Json.Object(new Dictionary<string, object>
+            var json = MainThreadDispatcher.Execute(() => Json.Object(new Dictionary<string, object>
             {
                 ["isCompiling"] = EditorApplication.isCompiling,
                 ["isUpdating"]  = EditorApplication.isUpdating,
             }));
+            ResponseHelper.Send(res, 200, json);
         }
 
         // ── /compiler/errors ─────────────────────────────────────────────────
