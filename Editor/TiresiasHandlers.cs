@@ -92,6 +92,84 @@ namespace Tiresias
             ResponseHelper.Send(res, 200, json);
         }
 
+        // ── GET /api/editor/screenshot ───────────────────────────────────────
+
+        public static void Screenshot(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var widthStr  = req.QueryString["width"];
+            var heightStr = req.QueryString["height"];
+            var source    = req.QueryString["source"] ?? "scene"; // "scene" or "game"
+
+            int width  = 960;
+            int height = 540;
+            if (widthStr != null)  int.TryParse(widthStr, out width);
+            if (heightStr != null) int.TryParse(heightStr, out height);
+            width  = Mathf.Clamp(width, 64, 3840);
+            height = Mathf.Clamp(height, 64, 2160);
+
+            try
+            {
+                var png = MainThreadDispatcher.Execute(() =>
+                {
+                    Camera cam = null;
+
+                    if (source == "game")
+                    {
+                        cam = Camera.main;
+                        if (cam == null)
+                        {
+                            // Find any enabled camera
+                            var cams = UnityEngine.Object.FindObjectsOfType<Camera>();
+                            if (cams.Length > 0) cam = cams[0];
+                        }
+                    }
+                    else
+                    {
+                        // Scene view camera
+                        var sceneView = SceneView.lastActiveSceneView;
+                        if (sceneView != null) cam = sceneView.camera;
+                    }
+
+                    if (cam == null) return null;
+
+                    var rt = new RenderTexture(width, height, 24);
+                    var prev = cam.targetTexture;
+                    cam.targetTexture = rt;
+                    cam.Render();
+                    cam.targetTexture = prev;
+
+                    RenderTexture.active = rt;
+                    var tex = new Texture2D(width, height, TextureFormat.RGB24, false);
+                    tex.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                    tex.Apply();
+                    RenderTexture.active = null;
+
+                    var bytes = tex.EncodeToPNG();
+
+                    UnityEngine.Object.DestroyImmediate(tex);
+                    UnityEngine.Object.DestroyImmediate(rt);
+
+                    return bytes;
+                }, 15000); // longer timeout for render
+
+                if (png == null)
+                {
+                    ResponseHelper.Send(res, 404, "{\"error\":\"No camera available for source '" + source + "'\"}");
+                    return;
+                }
+
+                ResponseHelper.SendPng(res, png);
+            }
+            catch (TimeoutException)
+            {
+                ResponseHelper.Send(res, 504, "{\"error\":\"Screenshot render timed out\"}");
+            }
+            catch (Exception ex)
+            {
+                ResponseHelper.Send(res, 500, Json.Object(new Dictionary<string, object> { ["error"] = $"Screenshot failed: {ex.Message}" }));
+            }
+        }
+
         // ── POST /api/editor/play ───────────────────────────────────────────
 
         public static void EditorPlay(HttpListenerRequest req, HttpListenerResponse res)

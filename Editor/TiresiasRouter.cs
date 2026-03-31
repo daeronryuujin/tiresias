@@ -204,6 +204,12 @@ namespace Tiresias
                 return true;
             }
 
+            if (method == "GET" && path == "/api/editor/screenshot")
+            {
+                TiresiasHandlers.Screenshot(req, res);
+                return true;
+            }
+
             if (method == "POST" && path == "/api/editor/play")
             {
                 TiresiasHandlers.EditorPlay(req, res);
