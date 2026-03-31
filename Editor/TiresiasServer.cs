@@ -64,7 +64,10 @@ namespace Tiresias
 
                     return;
                 }
-                catch (HttpListenerException)
+                catch (Exception ex) when (
+                    ex is HttpListenerException ||
+                    ex is System.Net.Sockets.SocketException ||
+                    ex.Message.Contains("socket address"))
                 {
                     // Port in use, try next
                     try { _listener?.Close(); } catch { }

@@ -186,6 +186,22 @@ namespace Tiresias
             ResponseHelper.Send(res, 200, "{\"status\":\"stop_requested\"}");
         }
 
+        // ── POST /api/editor/menu ────────────────────────────────────────────
+
+        public static void ExecuteMenu(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var f = ParseBody(req, res); if (f == null) return;
+            f.TryGetValue("item", out var menuItem);
+            if (string.IsNullOrEmpty(menuItem))
+            { ResponseHelper.Send(res, 400, "{\"error\":\"'item' is required\"}"); return; }
+
+            var result = MainThreadDispatcher.Execute(() => EditorApplication.ExecuteMenuItem(menuItem));
+
+            ResponseHelper.Send(res, result ? 200 : 404,
+                result ? Json.Object(new Dictionary<string, object> { ["executed"] = menuItem })
+                       : Json.Object(new Dictionary<string, object> { ["error"] = $"Menu item '{menuItem}' not found" }));
+        }
+
         // ── POST /api/editor/undo ───────────────────────────────────────────
 
         public static void EditorUndo(HttpListenerRequest req, HttpListenerResponse res)
@@ -209,7 +225,7 @@ namespace Tiresias
             var json = MainThreadDispatcher.Execute(() => Json.Object(new Dictionary<string, object>
             {
                 ["status"]       = "ok",
-                ["version"]      = "1.8.0",
+                ["version"]      = "1.9.0",
                 ["unityVersion"] = Application.unityVersion,
                 ["projectPath"]  = System.IO.Path.GetFileName(Application.dataPath.Replace("/Assets", "")),
                 ["isPlaying"]    = EditorApplication.isPlaying,
@@ -1266,6 +1282,405 @@ namespace Tiresias
                 ["valueType"]  = valType,
                 ["value"]      = value ?? $"({valType})",
             }));
+        }
+
+        // ── GET /assets/import-status ─────────────────────────────────────────
+
+        public static void AssetImportStatus(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var assetPath = req.QueryString["path"];
+            if (string.IsNullOrEmpty(assetPath))
+            { ResponseHelper.Send(res, 400, "{\"error\":\"Missing ?path= parameter\"}"); return; }
+
+            var (code, json) = MainThreadDispatcher.Execute(() =>
+            {
+                var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath);
+                if (asset == null)
+                    return (200, Json.Object(new Dictionary<string, object> { ["exists"] = false }));
+
+                var importer = AssetImporter.GetAtPath(assetPath);
+                var importerTypeName = importer != null ? importer.GetType().Name : "Unknown";
+
+                var subAssets = AssetDatabase.LoadAllAssetsAtPath(assetPath);
+                var subNames = new List<string>();
+                foreach (var sub in subAssets)
+                    if (sub != null && sub != asset) subNames.Add(sub.name);
+
+                var mainType = asset.GetType().Name;
+                if (importer is ModelImporter)
+                    mainType = "Model";
+
+                return (200, Json.Object(new Dictionary<string, object>
+                {
+                    ["exists"]    = true,
+                    ["type"]      = mainType,
+                    ["importer"]  = importerTypeName,
+                    ["subAssets"] = new RawJson("[" + string.Join(",", subNames.Select(n => Json.Quote(n))) + "]"),
+                }));
+            });
+            ResponseHelper.Send(res, code, json);
+        }
+
+        // ── POST /api/assets/instantiate ──────────────────────────────────────
+
+        public static void InstantiateModel(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var f = ParseBody(req, res); if (f == null) return;
+            f.TryGetValue("path",   out var assetPath);
+            f.TryGetValue("name",   out var goName);
+            f.TryGetValue("parent", out var parentName);
+            f.TryGetValue("px", out var pxs); f.TryGetValue("py", out var pys); f.TryGetValue("pz", out var pzs);
+            f.TryGetValue("rx", out var rxs); f.TryGetValue("ry", out var rys); f.TryGetValue("rz", out var rzs);
+            f.TryGetValue("sx", out var sxs); f.TryGetValue("sy", out var sys); f.TryGetValue("sz", out var szs);
+
+            if (string.IsNullOrEmpty(assetPath))
+            { ResponseHelper.Send(res, 400, "{\"error\":\"'path' is required\"}"); return; }
+
+            Dispatch(res, () =>
+            {
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
+                if (prefab == null)
+                    return HR.Error(404, $"Asset not found at '{assetPath}'");
+
+                Transform parent = null;
+                if (!string.IsNullOrEmpty(parentName))
+                {
+                    var parentGo = GameObject.Find(parentName);
+                    if (parentGo == null)
+                    {
+                        var newParent = new GameObject(parentName);
+                        Undo.RegisterCreatedObjectUndo(newParent, "Tiresias: Create parent " + parentName);
+                        MarkDirty(newParent);
+                        parent = newParent.transform;
+                    }
+                    else
+                    {
+                        parent = parentGo.transform;
+                    }
+                }
+
+                GameObject go = null;
+                try { go = (GameObject)PrefabUtility.InstantiatePrefab(prefab, parent); }
+                catch { }
+                if (go == null) go = (GameObject)UnityEngine.Object.Instantiate(prefab, parent);
+
+                if (!string.IsNullOrEmpty(goName)) go.name = goName;
+                Undo.RegisterCreatedObjectUndo(go, "Tiresias: Instantiate " + go.name);
+
+                var t = go.transform;
+                var pos = t.localPosition;
+                var rot = t.localEulerAngles;
+                var scl = t.localScale;
+
+                if (TryF(pxs, out float px)) pos.x = px;
+                if (TryF(pys, out float py)) pos.y = py;
+                if (TryF(pzs, out float pz)) pos.z = pz;
+                if (TryF(rxs, out float rx)) rot.x = rx;
+                if (TryF(rys, out float ry)) rot.y = ry;
+                if (TryF(rzs, out float rz)) rot.z = rz;
+                if (TryF(sxs, out float sx)) scl.x = sx;
+                if (TryF(sys, out float sy)) scl.y = sy;
+                if (TryF(szs, out float sz)) scl.z = sz;
+
+                t.localPosition    = pos;
+                t.localEulerAngles = rot;
+                t.localScale       = scl;
+
+                MarkDirty(go);
+                return HR.Ok(Json.Object(new Dictionary<string, object>
+                {
+                    ["name"]       = go.name,
+                    ["instanceId"] = go.GetInstanceID(),
+                }));
+            });
+        }
+
+        // ── POST /api/assets/materials ────────────────────────────────────────
+
+        public static void CreateMaterial(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            string body;
+            try { body = Json.ReadBody(req); }
+            catch { ResponseHelper.Send(res, 400, "{\"error\":\"Could not read request body\"}"); return; }
+
+            // Parse top-level fields from the body
+            var f = Json.ParseFlat(body);
+            f.TryGetValue("name",     out var matName);
+            f.TryGetValue("shader",   out var shaderName);
+            f.TryGetValue("savePath", out var savePath);
+
+            if (string.IsNullOrEmpty(shaderName)) shaderName = "Standard";
+            if (string.IsNullOrEmpty(savePath))
+            { ResponseHelper.Send(res, 400, "{\"error\":\"'savePath' is required\"}"); return; }
+
+            // Parse properties sub-object as raw string
+            var propsJson = ExtractJsonSubObject(body, "properties");
+
+            Dispatch(res, () =>
+            {
+                var shader = Shader.Find(shaderName);
+                if (shader == null)
+                    return HR.Error(400, $"Shader '{shaderName}' not found");
+
+                var mat = new Material(shader);
+                if (!string.IsNullOrEmpty(matName)) mat.name = matName;
+
+                // Apply properties
+                if (!string.IsNullOrEmpty(propsJson))
+                    ApplyMaterialProperties(mat, propsJson);
+
+                // Ensure directory exists
+                var dir = System.IO.Path.GetDirectoryName(savePath).Replace('\\', '/');
+                if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+                    System.IO.Directory.CreateDirectory(dir);
+
+                AssetDatabase.CreateAsset(mat, savePath);
+                AssetDatabase.SaveAssets();
+
+                return HR.Ok(Json.Object(new Dictionary<string, object>
+                {
+                    ["created"] = savePath,
+                }));
+            });
+        }
+
+        /// <summary>
+        /// Extracts the raw JSON value of a named key in a JSON object string.
+        /// Handles nested objects/arrays by counting braces.
+        /// </summary>
+        private static string ExtractJsonSubObject(string json, string key)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            var searchKey = "\"" + key + "\"";
+            int idx = json.IndexOf(searchKey);
+            if (idx < 0) return null;
+
+            // Find the ':' after the key
+            int i = idx + searchKey.Length;
+            while (i < json.Length && json[i] != ':') i++;
+            i++; // skip ':'
+            while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+            if (i >= json.Length) return null;
+
+            char start = json[i];
+            if (start != '{' && start != '[') return null;
+
+            char closeChar = start == '{' ? '}' : ']';
+            int depth = 0;
+            int valStart = i;
+            while (i < json.Length)
+            {
+                char c = json[i];
+                if (c == start) depth++;
+                else if (c == closeChar) { depth--; if (depth == 0) return json.Substring(valStart, i - valStart + 1); }
+                else if (c == '"') { i++; while (i < json.Length && json[i] != '"') { if (json[i] == '\\') i++; i++; } }
+                i++;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Applies a JSON properties object to a material.
+        /// Each key is a shader property name.
+        /// Values can be: float literals, string literals (texture path), or {r,g,b,a} objects.
+        /// </summary>
+        private static void ApplyMaterialProperties(Material mat, string propsJson)
+        {
+            if (string.IsNullOrEmpty(propsJson) || !propsJson.StartsWith("{")) return;
+            // Strip outer braces
+            var inner = propsJson.Substring(1, propsJson.Length - 2).Trim();
+            int i = 0;
+            while (i < inner.Length)
+            {
+                // Read key
+                while (i < inner.Length && inner[i] != '"') i++;
+                if (i >= inner.Length) break;
+                i++; // skip '"'
+                var keyStart = i;
+                while (i < inner.Length && inner[i] != '"') i++;
+                var propName = inner.Substring(keyStart, i - keyStart);
+                i++; // skip closing '"'
+
+                // Skip to ':'
+                while (i < inner.Length && inner[i] != ':') i++;
+                i++; // skip ':'
+                while (i < inner.Length && char.IsWhiteSpace(inner[i])) i++;
+                if (i >= inner.Length) break;
+
+                char valueStart = inner[i];
+
+                if (valueStart == '{')
+                {
+                    // Nested object — read until matching '}'
+                    int depth = 0, objStart = i;
+                    while (i < inner.Length)
+                    {
+                        if (inner[i] == '{') depth++;
+                        else if (inner[i] == '}') { depth--; if (depth == 0) { i++; break; } }
+                        else if (inner[i] == '"') { i++; while (i < inner.Length && inner[i] != '"') { if (inner[i] == '\\') i++; i++; } }
+                        i++;
+                    }
+                    var subObj = inner.Substring(objStart, i - objStart);
+                    var subFields = Json.ParseFlat(subObj);
+                    if (subFields.TryGetValue("r", out var rs) && subFields.TryGetValue("g", out var gs)
+                        && subFields.TryGetValue("b", out var bs))
+                    {
+                        TryF(rs, out float r); TryF(gs, out float g); TryF(bs, out float b);
+                        float a = 1f; if (subFields.TryGetValue("a", out var as2)) TryF(as2, out a);
+                        mat.SetColor(propName, new Color(r, g, b, a));
+                    }
+                }
+                else if (valueStart == '"')
+                {
+                    // String — could be texture path
+                    i++; // skip opening '"'
+                    var valStart = i;
+                    while (i < inner.Length && inner[i] != '"') { if (inner[i] == '\\') i++; i++; }
+                    var strVal = inner.Substring(valStart, i - valStart);
+                    i++; // skip closing '"'
+                    var tex = AssetDatabase.LoadAssetAtPath<Texture>(strVal);
+                    if (tex != null) mat.SetTexture(propName, tex);
+                }
+                else
+                {
+                    // Numeric
+                    var numStart = i;
+                    while (i < inner.Length && inner[i] != ',' && inner[i] != '}') i++;
+                    var numStr = inner.Substring(numStart, i - numStart).Trim();
+                    if (TryF(numStr, out float fv)) mat.SetFloat(propName, fv);
+                }
+
+                // Skip past comma
+                while (i < inner.Length && (inner[i] == ',' || char.IsWhiteSpace(inner[i]))) i++;
+            }
+        }
+
+        // ── PUT /api/scene/{name}/materials ───────────────────────────────────
+
+        public static void AssignMaterials(HttpListenerRequest req, HttpListenerResponse res, string gameObjectName)
+        {
+            string body;
+            try { body = Json.ReadBody(req); }
+            catch { ResponseHelper.Send(res, 400, "{\"error\":\"Could not read request body\"}"); return; }
+
+            // Extract materialPaths array
+            var materialPaths = ExtractStringArray(body, "materialPaths");
+            if (materialPaths == null || materialPaths.Count == 0)
+            { ResponseHelper.Send(res, 400, "{\"error\":\"'materialPaths' array is required\"}"); return; }
+
+            var f = Json.ParseFlat(body);
+            int rendererIndex = 0;
+            if (f.TryGetValue("rendererIndex", out var riStr))
+                int.TryParse(riStr, out rendererIndex);
+
+            Dispatch(res, () =>
+            {
+                var go = GameObject.Find(gameObjectName);
+                if (go == null) return HR.Error(404, $"GameObject '{gameObjectName}' not found");
+
+                var renderers = go.GetComponents<Renderer>();
+                if (renderers.Length == 0) return HR.Error(404, $"No Renderer on '{gameObjectName}'");
+                if (rendererIndex < 0 || rendererIndex >= renderers.Length)
+                    return HR.Error(400, $"rendererIndex {rendererIndex} out of range (0..{renderers.Length - 1})");
+
+                var renderer = renderers[rendererIndex];
+                var materials = new Material[materialPaths.Count];
+                for (int idx = 0; idx < materialPaths.Count; idx++)
+                {
+                    var mat = AssetDatabase.LoadAssetAtPath<Material>(materialPaths[idx]);
+                    if (mat == null) return HR.Error(404, $"Material not found at '{materialPaths[idx]}'");
+                    materials[idx] = mat;
+                }
+
+                var so = new SerializedObject(renderer);
+                var matsProp = so.FindProperty("m_Materials");
+                matsProp.arraySize = materials.Length;
+                for (int idx = 0; idx < materials.Length; idx++)
+                    matsProp.GetArrayElementAtIndex(idx).objectReferenceValue = materials[idx];
+                so.ApplyModifiedProperties();
+
+                MarkDirty(go);
+                return HR.Ok(Json.Object(new Dictionary<string, object>
+                {
+                    ["assigned"] = new RawJson("[" + string.Join(",", materialPaths.Select(p => Json.Quote(p))) + "]"),
+                    ["to"]       = gameObjectName,
+                }));
+            });
+        }
+
+        /// <summary>Extracts a JSON string array value for a named key.</summary>
+        private static List<string> ExtractStringArray(string json, string key)
+        {
+            if (string.IsNullOrEmpty(json)) return null;
+            var searchKey = "\"" + key + "\"";
+            int idx = json.IndexOf(searchKey);
+            if (idx < 0) return null;
+
+            int i = idx + searchKey.Length;
+            while (i < json.Length && json[i] != ':') i++;
+            i++;
+            while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+            if (i >= json.Length || json[i] != '[') return null;
+
+            i++; // skip '['
+            var result = new List<string>();
+            while (i < json.Length)
+            {
+                while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+                if (i >= json.Length || json[i] == ']') break;
+                if (json[i] == '"')
+                {
+                    i++;
+                    var sb = new System.Text.StringBuilder();
+                    while (i < json.Length && json[i] != '"')
+                    {
+                        if (json[i] == '\\') i++;
+                        if (i < json.Length) sb.Append(json[i]);
+                        i++;
+                    }
+                    result.Add(sb.ToString());
+                    i++; // skip closing '"'
+                }
+                else i++;
+                while (i < json.Length && (json[i] == ',' || char.IsWhiteSpace(json[i]))) i++;
+            }
+            return result;
+        }
+
+        // ── POST /api/assets/prefabs/save ─────────────────────────────────────
+
+        public static void SaveAsPrefab(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var f = ParseBody(req, res); if (f == null) return;
+            f.TryGetValue("gameObject", out var goName);
+            f.TryGetValue("savePath",   out var savePath);
+
+            if (string.IsNullOrEmpty(goName))
+            { ResponseHelper.Send(res, 400, "{\"error\":\"'gameObject' is required\"}"); return; }
+            if (string.IsNullOrEmpty(savePath))
+            { ResponseHelper.Send(res, 400, "{\"error\":\"'savePath' is required\"}"); return; }
+
+            Dispatch(res, () =>
+            {
+                var go = GameObject.Find(goName);
+                if (go == null) return HR.Error(404, $"GameObject '{goName}' not found");
+
+                var dir = System.IO.Path.GetDirectoryName(savePath).Replace('\\', '/');
+                if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+                    System.IO.Directory.CreateDirectory(dir);
+
+                var prefab = PrefabUtility.SaveAsPrefabAssetAndConnect(
+                    go, savePath, InteractionMode.UserAction);
+
+                if (prefab == null)
+                    return HR.Error(500, $"PrefabUtility.SaveAsPrefabAssetAndConnect returned null for '{goName}'");
+
+                return HR.Ok(Json.Object(new Dictionary<string, object>
+                {
+                    ["prefab"]     = savePath,
+                    ["gameObject"] = goName,
+                }));
+            });
         }
 
         // ─────────────────────────────────────────────────────────────────────

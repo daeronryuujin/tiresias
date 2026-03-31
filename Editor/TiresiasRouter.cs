@@ -51,6 +51,8 @@ namespace Tiresias
                         TiresiasHandlers.AssetSearch(req, res); break;
                     case "/assets/dependencies":
                         TiresiasHandlers.AssetDependencies(req, res); break;
+                    case "/assets/import-status":
+                        TiresiasHandlers.AssetImportStatus(req, res); break;
 
                     // ── Compiler ──────────────────────────────────────────────
                     case "/compiler/status":
@@ -186,6 +188,25 @@ namespace Tiresias
                 return true;
             }
 
+            // Must be matched BEFORE the /api/assets/prefabs/{path} catch-all below
+            if (method == "POST" && path == "/api/assets/prefabs/save")
+            {
+                TiresiasHandlers.SaveAsPrefab(req, res);
+                return true;
+            }
+
+            if (method == "POST" && path == "/api/assets/instantiate")
+            {
+                TiresiasHandlers.InstantiateModel(req, res);
+                return true;
+            }
+
+            if (method == "POST" && path == "/api/assets/materials")
+            {
+                TiresiasHandlers.CreateMaterial(req, res);
+                return true;
+            }
+
             if (method == "POST" && path == "/api/scene/save")
             {
                 TiresiasHandlers.SaveScene(req, res);
@@ -228,6 +249,12 @@ namespace Tiresias
                 return true;
             }
 
+            if (method == "POST" && path == "/api/editor/menu")
+            {
+                TiresiasHandlers.ExecuteMenu(req, res);
+                return true;
+            }
+
             if (method == "POST" && path == "/api/editor/redo")
             {
                 TiresiasHandlers.EditorRedo(req, res);
@@ -261,6 +288,8 @@ namespace Tiresias
                     { TiresiasHandlers.SetActive(req, res, name); return true; }
                     if (method == "PUT" && action == "parent")
                     { TiresiasHandlers.SetParent(req, res, name); return true; }
+                    if (method == "PUT" && action == "materials")
+                    { TiresiasHandlers.AssignMaterials(req, res, name); return true; }
                 }
 
                 if (segments.Length == 6 && segments[4] == "components" && method == "DELETE")
