@@ -22,14 +22,16 @@ It gives you live read/write access to the Unity scene, asset list, and compiler
 | `/status` | GET | Server status, Unity version, isPlaying, isCompiling, port |
 | `/scene` | GET | Active scene name, path, dirty state |
 | `/scene/hierarchy` | GET | Full scene tree. Optional `?depth=N` (default 3) |
-| `/scene/object` | GET | Component detail for a single object. Required `?name=<GameObject name>` |
+| `/scene/object` | GET | Component detail. `?name=<Name>`. Add `?detail=full` for all serialized field values |
 | `/scene/selected` | GET | Names of currently selected GameObjects |
+| `/scenes` | GET | List all .unity scene files in the project |
 | `/assets/scripts` | GET | All .cs file paths under Assets/ |
 | `/assets/prefabs` | GET | All prefab paths under Assets/ |
 | `/assets/search` | GET | Search assets. `?query=AudioLink&type=Material&folder=Assets` |
 | `/assets/dependencies` | GET | Asset dependency graph. `?path=Assets/Prefabs/X.prefab` |
 | `/compiler/status` | GET | isCompiling, isUpdating, lastCompileAt, errorCount, warningCount |
 | `/compiler/errors` | GET | Array of {file, line, message} for compile errors |
+| `/console/logs` | GET | Console log buffer (last 200). `?type=Error&since=<ISO timestamp>&clear=true` |
 | `/build/stats` | GET | Scene performance stats: triangles, vertices, materials, textures, lights |
 | `/batch` | POST | Execute multiple requests in one round-trip (max 10) |
 
@@ -57,6 +59,19 @@ curl http://localhost:$PORT/status
 | `/api/scene/{name}/components/{type}/fields/{field}` | PUT | see below | Set a serialized field (reference or value). |
 | `/api/assets/prefabs/{path}` | POST | `{"parent":"ParentName","name":"Override"}` | Instantiate a prefab from Assets/. `parent` and `name` are optional. |
 | `/api/assets/refresh` | POST | — | Trigger `AssetDatabase.Refresh()` — picks up new files without Ctrl+R. |
+
+### Scene & Editor Control (v1.8+)
+
+| Endpoint | Method | Body | Description |
+|---|---|---|---|
+| `/api/scene/save` | POST | — | Save the active scene (Ctrl+S equivalent). |
+| `/api/scene/open` | POST | `{"path":"Assets/Scenes/X.unity"}` | Open a scene. Optional `"save":"false"` to skip save prompt. |
+| `/api/editor/play` | POST | — | Enter play mode. Poll `/status` until `isPlaying` is true. |
+| `/api/editor/stop` | POST | — | Exit play mode. Poll `/status` until `isPlaying` is false. |
+| `/api/editor/undo` | POST | — | Undo the last operation (Ctrl+Z equivalent). |
+| `/api/editor/redo` | POST | — | Redo the last undone operation (Ctrl+Y equivalent). |
+
+All write operations are registered with Unity's Undo system — every scene change is undoable.
 
 #### SetField body formats
 
@@ -88,6 +103,17 @@ curl http://localhost:7890/scene/hierarchy
 # What components does VideoPlayer have?
 curl "http://localhost:7890/scene/object?name=VideoPlayer"
 
+# Full field introspection — see all serialized values
+curl "http://localhost:7890/scene/object?name=VideoPlayer&detail=full"
+
+# List all scenes in the project
+curl http://localhost:7890/scenes
+
+# Open a different scene
+curl -X POST http://localhost:7890/api/scene/open \
+  -H "Content-Type: application/json" \
+  -d '{"path":"Assets/Scenes/MyWorld.unity"}'
+
 # Create a new empty GameObject under UI
 curl -X POST http://localhost:7890/api/scene/objects \
   -H "Content-Type: application/json" \
@@ -115,6 +141,21 @@ curl -X POST "http://localhost:7890/api/assets/prefabs/Prefabs%2FScoreBoard" \
 
 # Delete a GameObject
 curl -X DELETE "http://localhost:7890/api/scene/OldPanel"
+
+# Save the scene
+curl -X POST http://localhost:7890/api/scene/save
+
+# Enter play mode for testing
+curl -X POST http://localhost:7890/api/editor/play
+
+# Check console logs during play mode
+curl "http://localhost:7890/console/logs?type=Error"
+
+# Exit play mode
+curl -X POST http://localhost:7890/api/editor/stop
+
+# Undo a mistake
+curl -X POST http://localhost:7890/api/editor/undo
 ```
 
 ## Hard Rules for This Project
@@ -150,7 +191,7 @@ curl -X DELETE "http://localhost:7890/api/scene/OldPanel"
 
 - **GitHub**: `daeronryuujin/tiresias`
 - **Package ID**: `com.daeronryuujin.tiresias`
-- **Current version**: See `package.json` → `version` field (was 1.4.0 as of last session)
+- **Current version**: See `package.json` → `version` field
 - **Default branch**: `main` (note: local repo also has `master` — always push to `main`)
 - **VPM listing URL**: `https://daeronryuujin.github.io/tiresias/index.json`
 
@@ -210,7 +251,7 @@ To cut a new release:
 - **Tiresias Editor code uses `List<T>` and LINQ freely** — UdonSharp constraints only apply to *world scripts* (scripts that inherit from `UdonSharpBehaviour`). Editor code runs in the Unity Editor, not in VRChat, so standard C# is fine.
 - **`index.json`** is auto-maintained by CI. Don't manually edit version entries — they'll be overwritten or duplicated.
 - **The zip must have `package.json` at its root** (not nested in a subfolder) for VPM/UPM compatibility.
-- **`/console/errors`** exists as a route but returns a placeholder — Unity has no public API for reading past console log entries.
+- **`/console/logs`** captures logs in real time via `Application.logMessageReceived` — a ring buffer of the last 200 entries. Replaces the old `/console/errors` stub.
 - **Port 7890** is hardcoded in `TiresiasServer.cs` (`PREFIX` constant).
 
 ### PR Workflow

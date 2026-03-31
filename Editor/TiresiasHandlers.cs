@@ -20,6 +20,110 @@ namespace Tiresias
             ResponseHelper.Send(res, 200, "{\"status\":\"ok\"}");
         }
 
+        // ── POST /api/scene/save ────────────────────────────────────────────
+
+        public static void SaveScene(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var json = MainThreadDispatcher.Execute(() =>
+            {
+                var scene = SceneManager.GetActiveScene();
+                bool saved = EditorSceneManager.SaveScene(scene);
+                return Json.Object(new Dictionary<string, object>
+                {
+                    ["saved"] = saved,
+                    ["scene"] = scene.name,
+                    ["path"]  = scene.path,
+                });
+            });
+            ResponseHelper.Send(res, 200, json);
+        }
+
+        // ── POST /api/scene/open ────────────────────────────────────────────
+
+        public static void OpenScene(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var f = ParseBody(req, res); if (f == null) return;
+            f.TryGetValue("path", out var scenePath);
+            f.TryGetValue("save", out var saveStr);
+            bool save = saveStr == null || saveStr.ToLower() != "false";
+
+            if (string.IsNullOrEmpty(scenePath))
+            { ResponseHelper.Send(res, 400, "{\"error\":\"'path' is required\"}"); return; }
+
+            Dispatch(res, () =>
+            {
+                if (!System.IO.File.Exists(scenePath))
+                    return HR.Error(404, $"Scene file not found: {scenePath}");
+
+                if (save) EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();
+                var scene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
+                return HR.Ok(Json.Object(new Dictionary<string, object>
+                {
+                    ["opened"]    = scene.name,
+                    ["path"]      = scene.path,
+                    ["rootCount"] = scene.rootCount,
+                }));
+            });
+        }
+
+        // ── GET /scenes ─────────────────────────────────────────────────────
+
+        public static void ListScenes(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var json = MainThreadDispatcher.Execute(() =>
+            {
+                var guids = AssetDatabase.FindAssets("t:Scene", new[] { "Assets" });
+                var scenes = new List<string>();
+                foreach (var guid in guids)
+                {
+                    var path = AssetDatabase.GUIDToAssetPath(guid);
+                    scenes.Add(Json.Object(new Dictionary<string, object>
+                    {
+                        ["path"] = path,
+                        ["name"] = System.IO.Path.GetFileNameWithoutExtension(path),
+                    }));
+                }
+                return Json.Object(new Dictionary<string, object>
+                {
+                    ["count"]  = scenes.Count,
+                    ["scenes"] = new RawJson("[" + string.Join(",", scenes) + "]"),
+                });
+            });
+            ResponseHelper.Send(res, 200, json);
+        }
+
+        // ── POST /api/editor/play ───────────────────────────────────────────
+
+        public static void EditorPlay(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            MainThreadDispatcher.Execute(() => { EditorApplication.isPlaying = true; return 0; });
+            ResponseHelper.Send(res, 200, "{\"status\":\"play_requested\"}");
+        }
+
+        // ── POST /api/editor/stop ───────────────────────────────────────────
+
+        public static void EditorStop(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            MainThreadDispatcher.Execute(() => { EditorApplication.isPlaying = false; return 0; });
+            ResponseHelper.Send(res, 200, "{\"status\":\"stop_requested\"}");
+        }
+
+        // ── POST /api/editor/undo ───────────────────────────────────────────
+
+        public static void EditorUndo(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            MainThreadDispatcher.Execute(() => { Undo.PerformUndo(); return 0; });
+            ResponseHelper.Send(res, 200, "{\"status\":\"ok\"}");
+        }
+
+        // ── POST /api/editor/redo ───────────────────────────────────────────
+
+        public static void EditorRedo(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            MainThreadDispatcher.Execute(() => { Undo.PerformRedo(); return 0; });
+            ResponseHelper.Send(res, 200, "{\"status\":\"ok\"}");
+        }
+
         // ── /status ───────────────────────────────────────────────────────────
 
         public static void Status(HttpListenerRequest req, HttpListenerResponse res)
@@ -27,7 +131,7 @@ namespace Tiresias
             var json = MainThreadDispatcher.Execute(() => Json.Object(new Dictionary<string, object>
             {
                 ["status"]       = "ok",
-                ["version"]      = "1.7.0",
+                ["version"]      = "1.8.0",
                 ["unityVersion"] = Application.unityVersion,
                 ["projectPath"]  = System.IO.Path.GetFileName(Application.dataPath.Replace("/Assets", "")),
                 ["isPlaying"]    = EditorApplication.isPlaying,
@@ -109,6 +213,7 @@ namespace Tiresias
         {
             var name = req.QueryString["name"];
             if (string.IsNullOrEmpty(name)) { ResponseHelper.Send(res, 400, "{\"error\":\"Missing ?name= parameter\"}"); return; }
+            bool detail = req.QueryString["detail"] == "full";
 
             var (code, json) = MainThreadDispatcher.Execute(() =>
             {
@@ -118,11 +223,33 @@ namespace Tiresias
                 var t = go.transform;
                 var components = go.GetComponents<Component>()
                     .Where(c => c != null)
-                    .Select(c => Json.Object(new Dictionary<string, object>
+                    .Select(c =>
                     {
-                        ["type"]    = c.GetType().Name,
-                        ["enabled"] = (c is Behaviour b) ? (object)b.enabled : (object)true,
-                    }));
+                        var fields = new Dictionary<string, object>
+                        {
+                            ["type"]    = c.GetType().Name,
+                            ["enabled"] = (c is Behaviour b) ? (object)b.enabled : (object)true,
+                        };
+
+                        if (detail)
+                        {
+                            try
+                            {
+                                var so = new SerializedObject(c);
+                                var propList = new List<string>();
+                                var iter = so.GetIterator();
+                                if (iter.NextVisible(true))
+                                {
+                                    do { propList.Add(SerializeProperty(iter)); }
+                                    while (iter.NextVisible(false));
+                                }
+                                fields["fields"] = new RawJson("[" + string.Join(",", propList) + "]");
+                            }
+                            catch { /* skip fields if serialization fails */ }
+                        }
+
+                        return Json.Object(fields);
+                    });
 
                 return (200, Json.Object(new Dictionary<string, object>
                 {
@@ -138,6 +265,88 @@ namespace Tiresias
                 }));
             });
             ResponseHelper.Send(res, code, json);
+        }
+
+        private static string SerializeProperty(SerializedProperty prop)
+        {
+            var fields = new Dictionary<string, object>
+            {
+                ["name"] = prop.name,
+                ["type"] = prop.propertyType.ToString(),
+            };
+
+            try
+            {
+                switch (prop.propertyType)
+                {
+                    case SerializedPropertyType.Integer:
+                        fields["value"] = prop.intValue; break;
+                    case SerializedPropertyType.Boolean:
+                        fields["value"] = prop.boolValue; break;
+                    case SerializedPropertyType.Float:
+                        fields["value"] = prop.floatValue; break;
+                    case SerializedPropertyType.String:
+                        fields["value"] = prop.stringValue ?? ""; break;
+                    case SerializedPropertyType.Enum:
+                        var names = prop.enumDisplayNames;
+                        var idx = prop.enumValueIndex;
+                        fields["value"] = (idx >= 0 && idx < names.Length) ? names[idx] : idx.ToString();
+                        fields["index"] = idx;
+                        break;
+                    case SerializedPropertyType.ObjectReference:
+                        var obj = prop.objectReferenceValue;
+                        if (obj != null)
+                        {
+                            fields["value"] = new RawJson(Json.Object(new Dictionary<string, object>
+                            {
+                                ["name"] = obj.name,
+                                ["type"] = obj.GetType().Name,
+                            }));
+                        }
+                        else
+                        {
+                            fields["value"] = null;
+                        }
+                        break;
+                    case SerializedPropertyType.Vector3:
+                        fields["value"] = new RawJson(Vec3(prop.vector3Value)); break;
+                    case SerializedPropertyType.Vector2:
+                        var v2 = prop.vector2Value;
+                        fields["value"] = new RawJson(
+                            "{\"x\":" + v2.x.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
+                            ",\"y\":" + v2.y.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) + "}");
+                        break;
+                    case SerializedPropertyType.Color:
+                        var col = prop.colorValue;
+                        fields["value"] = new RawJson(
+                            "{\"r\":" + col.r.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
+                            ",\"g\":" + col.g.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
+                            ",\"b\":" + col.b.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
+                            ",\"a\":" + col.a.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) + "}");
+                        break;
+                    case SerializedPropertyType.Rect:
+                        var r = prop.rectValue;
+                        fields["value"] = new RawJson(
+                            "{\"x\":" + r.x.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
+                            ",\"y\":" + r.y.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
+                            ",\"w\":" + r.width.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) +
+                            ",\"h\":" + r.height.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) + "}");
+                        break;
+                    case SerializedPropertyType.LayerMask:
+                        fields["value"] = prop.intValue; break;
+                    case SerializedPropertyType.ArraySize:
+                        fields["value"] = prop.intValue; break;
+                    default:
+                        fields["value"] = $"<{prop.propertyType}>";
+                        break;
+                }
+            }
+            catch
+            {
+                fields["value"] = "<error reading value>";
+            }
+
+            return Json.Object(fields);
         }
 
         // ── /scene/selected ───────────────────────────────────────────────────
@@ -272,20 +481,26 @@ namespace Tiresias
 
         public static void CompilerStatus(HttpListenerRequest req, HttpListenerResponse res)
         {
-            var json = MainThreadDispatcher.Execute(() => Json.Object(new Dictionary<string, object>
+            var json = MainThreadDispatcher.Execute(() =>
             {
-                ["isCompiling"]    = EditorApplication.isCompiling,
-                ["isUpdating"]     = EditorApplication.isUpdating,
-                ["lastCompileAt"]  = _lastCompileTime,
-                ["errorCount"]     = _compilerErrors.Count,
-                ["warningCount"]   = _lastWarningCount,
-            }));
+                int errorCount, warningCount;
+                lock (_compilerLock) { errorCount = _compilerErrors.Count; warningCount = _lastWarningCount; }
+                return Json.Object(new Dictionary<string, object>
+                {
+                    ["isCompiling"]    = EditorApplication.isCompiling,
+                    ["isUpdating"]     = EditorApplication.isUpdating,
+                    ["lastCompileAt"]  = _lastCompileTime,
+                    ["errorCount"]     = errorCount,
+                    ["warningCount"]   = warningCount,
+                });
+            });
             ResponseHelper.Send(res, 200, json);
         }
 
         // ── /compiler/errors ─────────────────────────────────────────────────
 
         private static readonly List<Dictionary<string, object>> _compilerErrors = new List<Dictionary<string, object>>();
+        private static readonly object _compilerLock = new object();
         private static bool _hooked;
 
         [InitializeOnLoadMethod]
@@ -295,23 +510,29 @@ namespace Tiresias
             _hooked = true;
             CompilationPipeline.compilationStarted += _ =>
             {
-                _compilerErrors.Clear();
-                _lastWarningCount = 0;
+                lock (_compilerLock)
+                {
+                    _compilerErrors.Clear();
+                    _lastWarningCount = 0;
+                }
             };
             CompilationPipeline.assemblyCompilationFinished += (path, messages) =>
             {
-                foreach (var m in messages)
+                lock (_compilerLock)
                 {
-                    if (m.type == CompilerMessageType.Error)
+                    foreach (var m in messages)
                     {
-                        _compilerErrors.Add(new Dictionary<string, object>
+                        if (m.type == CompilerMessageType.Error)
                         {
-                            ["file"] = m.file, ["line"] = m.line, ["message"] = m.message,
-                        });
-                    }
-                    else if (m.type == CompilerMessageType.Warning)
-                    {
-                        _lastWarningCount++;
+                            _compilerErrors.Add(new Dictionary<string, object>
+                            {
+                                ["file"] = m.file, ["line"] = m.line, ["message"] = m.message,
+                            });
+                        }
+                        else if (m.type == CompilerMessageType.Warning)
+                        {
+                            _lastWarningCount++;
+                        }
                     }
                 }
             };
@@ -329,15 +550,73 @@ namespace Tiresias
         /// <summary>Direct access for batch endpoint.</summary>
         public static string GetCompilerErrorsJson()
         {
-            return "[" + string.Join(",", _compilerErrors.Select(e => Json.Object(e))) + "]";
+            lock (_compilerLock)
+            {
+                return "[" + string.Join(",", _compilerErrors.Select(e => Json.Object(e))) + "]";
+            }
         }
 
-        // ── /console/errors ───────────────────────────────────────────────────
+        // ── /console/logs ────────────────────────────────────────────────────
 
-        public static void ConsoleErrors(HttpListenerRequest req, HttpListenerResponse res)
+        private const int LogBufferSize = 200;
+        private static readonly List<Dictionary<string, object>> _logBuffer = new List<Dictionary<string, object>>();
+        private static readonly object _logLock = new object();
+        private static bool _logHooked;
+
+        [InitializeOnLoadMethod]
+        private static void HookLogMessages()
         {
-            ResponseHelper.Send(res, 200,
-                "{\"note\":\"Unity has no public API for reading past console logs. Use /compiler/errors for compilation issues.\",\"entries\":[]}");
+            if (_logHooked) return;
+            _logHooked = true;
+            Application.logMessageReceived += (message, stackTrace, logType) =>
+            {
+                lock (_logLock)
+                {
+                    if (_logBuffer.Count >= LogBufferSize)
+                        _logBuffer.RemoveAt(0);
+                    _logBuffer.Add(new Dictionary<string, object>
+                    {
+                        ["message"]    = message,
+                        ["stackTrace"] = stackTrace,
+                        ["type"]       = logType.ToString(),
+                        ["timestamp"]  = DateTime.Now.ToString("O"),
+                    });
+                }
+            };
+        }
+
+        public static void ConsoleLogs(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var typeFilter = req.QueryString["type"];
+            var since = req.QueryString["since"];
+            var clearParam = req.QueryString["clear"];
+
+            string json;
+            lock (_logLock)
+            {
+                IEnumerable<Dictionary<string, object>> entries = _logBuffer;
+
+                if (!string.IsNullOrEmpty(typeFilter))
+                    entries = entries.Where(e => e["type"].ToString().Equals(typeFilter, StringComparison.OrdinalIgnoreCase));
+
+                if (!string.IsNullOrEmpty(since) && DateTime.TryParse(since, null,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out var sinceDate))
+                    entries = entries.Where(e =>
+                        DateTime.TryParse((string)e["timestamp"], null,
+                            System.Globalization.DateTimeStyles.RoundtripKind, out var ts) && ts > sinceDate);
+
+                var results = entries.Select(e => Json.Object(e)).ToList();
+
+                if (clearParam == "true")
+                    _logBuffer.Clear();
+
+                json = Json.Object(new Dictionary<string, object>
+                {
+                    ["count"]   = results.Count,
+                    ["entries"] = new RawJson("[" + string.Join(",", results) + "]"),
+                });
+            }
+            ResponseHelper.Send(res, 200, json);
         }
 
         // ── /build/stats ──────────────────────────────────────────────────────
@@ -474,6 +753,7 @@ namespace Tiresias
             Dispatch(res, () =>
             {
                 var go = new GameObject(goName);
+                Undo.RegisterCreatedObjectUndo(go, "Tiresias: Create " + goName);
 
                 if (!string.IsNullOrEmpty(parentName))
                 {
@@ -507,9 +787,11 @@ namespace Tiresias
         public static void AddComponent(HttpListenerRequest req, HttpListenerResponse res, string gameObjectName)
         {
             var f = ParseBody(req, res); if (f == null) return;
-            f.TryGetValue("componentType", out var componentType);
+            f.TryGetValue("type", out var componentType);
             if (string.IsNullOrEmpty(componentType))
-            { ResponseHelper.Send(res, 400, "{\"error\":\"'componentType' is required\"}"); return; }
+                f.TryGetValue("componentType", out componentType); // backward compat
+            if (string.IsNullOrEmpty(componentType))
+            { ResponseHelper.Send(res, 400, "{\"error\":\"'type' is required\"}"); return; }
 
             Dispatch(res, () =>
             {
@@ -534,7 +816,10 @@ namespace Tiresias
                     }
                 }
 
-                if (comp == null) comp = go.AddComponent(type);
+                if (comp == null)
+                {
+                    comp = Undo.AddComponent(go, type);
+                }
                 MarkDirty(go);
                 return HR.Ok(Json.Object(new Dictionary<string, object>
                 {
@@ -557,6 +842,7 @@ namespace Tiresias
                 var go = GameObject.Find(gameObjectName);
                 if (go == null) return HR.Error(404, $"GameObject '{gameObjectName}' not found");
                 var t = go.transform;
+                Undo.RecordObject(t, "Tiresias: SetTransform " + gameObjectName);
 
                 if (f.ContainsKey("px") || f.ContainsKey("py") || f.ContainsKey("pz"))
                 {
@@ -609,6 +895,7 @@ namespace Tiresias
             {
                 var go = GameObject.Find(gameObjectName);
                 if (go == null) return HR.Error(404, $"GameObject '{gameObjectName}' not found");
+                Undo.RecordObject(go, "Tiresias: SetActive " + gameObjectName);
                 go.SetActive(active);
                 MarkDirty(go);
                 return HR.Ok(Json.Object(new Dictionary<string, object>
@@ -627,9 +914,8 @@ namespace Tiresias
             {
                 var go = GameObject.Find(gameObjectName);
                 if (go == null) return HR.Error(404, $"GameObject '{gameObjectName}' not found");
-                var scene = SceneManager.GetActiveScene();
-                UnityEngine.Object.DestroyImmediate(go);
-                EditorSceneManager.MarkSceneDirty(scene);
+                Undo.DestroyObjectImmediate(go);
+                EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
                 return HR.Ok(Json.Object(new Dictionary<string, object> { ["deleted"] = gameObjectName }));
             });
         }
@@ -656,6 +942,7 @@ namespace Tiresias
                     newParent = parentGo.transform;
                 }
 
+                Undo.RecordObject(go.transform, "Tiresias: SetParent " + gameObjectName);
                 go.transform.SetParent(newParent, wps);
                 MarkDirty(go);
                 return HR.Ok(Json.Object(new Dictionary<string, object>
@@ -689,6 +976,7 @@ namespace Tiresias
                 }
 
                 var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab, parent);
+                Undo.RegisterCreatedObjectUndo(instance, "Tiresias: Instantiate " + prefab.name);
                 if (!string.IsNullOrEmpty(overrideName)) instance.name = overrideName;
 
                 var pos = instance.transform.position;
@@ -721,7 +1009,7 @@ namespace Tiresias
                 var comp = FindComponentByTypeName(go, componentType);
                 if (comp == null) return HR.Error(404, $"Component '{componentType}' not found on '{gameObjectName}'");
 
-                UnityEngine.Object.DestroyImmediate(comp);
+                Undo.DestroyObjectImmediate(comp);
                 MarkDirty(go);
                 return HR.Ok(Json.Object(new Dictionary<string, object>
                 {
@@ -808,6 +1096,8 @@ namespace Tiresias
             if (prop.propertyType != SerializedPropertyType.ObjectReference)
                 return HR.Error(400, $"Field '{field}' is '{prop.propertyType}' — use 'valueType' for primitives");
 
+            Undo.RecordObject(comp, $"Tiresias: SetField {field} on {goName}");
+
             var targetGo = GameObject.Find(targetGoName);
             if (targetGo == null) return HR.Error(404, $"Target '{targetGoName}' not found");
 
@@ -856,6 +1146,8 @@ namespace Tiresias
             var prop = so.FindProperty(field);
             if (prop == null)
                 return HR.Error(400, $"No field '{field}' on '{compType}'. Available: [{string.Join(", ", ListSerializedFields(so))}]");
+
+            Undo.RecordObject(comp, $"Tiresias: SetField {field} on {goName}");
 
             try
             {
@@ -944,10 +1236,14 @@ namespace Tiresias
         {
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
-                var t = asm.GetType(typeName);
-                if (t != null) return t;
-                t = Array.Find(asm.GetTypes(), x => x.Name == typeName);
-                if (t != null) return t;
+                try
+                {
+                    var t = asm.GetType(typeName);
+                    if (t != null) return t;
+                    t = Array.Find(asm.GetTypes(), x => x.Name == typeName);
+                    if (t != null) return t;
+                }
+                catch { continue; }
             }
             return null;
         }
@@ -985,7 +1281,7 @@ namespace Tiresias
     // ─────────────────────────────────────────────────────────────────────
 
     /// <summary>Captures response data from an internal handler call (for /batch).</summary>
-    internal class ResponseCapture
+    public class ResponseCapture
     {
         public int StatusCode = 200;
         public string Body = "null";
@@ -998,7 +1294,7 @@ namespace Tiresias
     }
 
     /// <summary>Minimal request representation for batch sub-requests.</summary>
-    internal class BatchRequest
+    public class BatchRequest
     {
         public string Method { get; }
         public string Path { get; }

@@ -59,8 +59,12 @@ namespace Tiresias
                         TiresiasHandlers.CompilerErrors(req, res); break;
 
                     // ── Console ───────────────────────────────────────────────
-                    case "/console/errors":
-                        TiresiasHandlers.ConsoleErrors(req, res); break;
+                    case "/console/logs":
+                        TiresiasHandlers.ConsoleLogs(req, res); break;
+
+                    // ── Scenes ───────────────────────────────────────────────
+                    case "/scenes":
+                        TiresiasHandlers.ListScenes(req, res); break;
 
                     // ── Build ─────────────────────────────────────────────────
                     case "/build/stats":
@@ -134,7 +138,7 @@ namespace Tiresias
                 case "/status":
                     return MainThreadDispatcher.Execute(() => Json.Object(new System.Collections.Generic.Dictionary<string, object>
                     {
-                        ["status"] = "ok", ["version"] = "1.7.0",
+                        ["status"] = "ok", ["version"] = "1.8.0",
                         ["unityVersion"] = UnityEngine.Application.unityVersion,
                         ["isPlaying"] = UnityEditor.EditorApplication.isPlaying,
                         ["isCompiling"] = UnityEditor.EditorApplication.isCompiling,
@@ -182,9 +186,45 @@ namespace Tiresias
                 return true;
             }
 
+            if (method == "POST" && path == "/api/scene/save")
+            {
+                TiresiasHandlers.SaveScene(req, res);
+                return true;
+            }
+
+            if (method == "POST" && path == "/api/scene/open")
+            {
+                TiresiasHandlers.OpenScene(req, res);
+                return true;
+            }
+
             if (method == "POST" && path == "/api/scene/objects")
             {
                 TiresiasHandlers.CreateGameObject(req, res);
+                return true;
+            }
+
+            if (method == "POST" && path == "/api/editor/play")
+            {
+                TiresiasHandlers.EditorPlay(req, res);
+                return true;
+            }
+
+            if (method == "POST" && path == "/api/editor/stop")
+            {
+                TiresiasHandlers.EditorStop(req, res);
+                return true;
+            }
+
+            if (method == "POST" && path == "/api/editor/undo")
+            {
+                TiresiasHandlers.EditorUndo(req, res);
+                return true;
+            }
+
+            if (method == "POST" && path == "/api/editor/redo")
+            {
+                TiresiasHandlers.EditorRedo(req, res);
                 return true;
             }
 
