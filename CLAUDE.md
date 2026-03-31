@@ -29,6 +29,7 @@ It gives you live read/write access to the Unity scene, asset list, and compiler
 | `/assets/prefabs` | GET | All prefab paths under Assets/ |
 | `/assets/search` | GET | Search assets. `?query=AudioLink&type=Material&folder=Assets` |
 | `/assets/dependencies` | GET | Asset dependency graph. `?path=Assets/Prefabs/X.prefab` |
+| `/assets/import-status` | GET | Check if an asset imported successfully. `?path=Assets/Models/bar_stool.glb` |
 | `/compiler/status` | GET | isCompiling, isUpdating, lastCompileAt, errorCount, warningCount |
 | `/compiler/errors` | GET | Array of {file, line, message} for compile errors |
 | `/console/logs` | GET | Console log buffer (last 200). `?type=Error&since=<ISO timestamp>&clear=true` |
@@ -59,6 +60,16 @@ curl http://localhost:$PORT/status
 | `/api/scene/{name}/components/{type}/fields/{field}` | PUT | see below | Set a serialized field (reference or value). |
 | `/api/assets/prefabs/{path}` | POST | `{"parent":"ParentName","name":"Override"}` | Instantiate a prefab from Assets/. `parent` and `name` are optional. |
 | `/api/assets/refresh` | POST | — | Trigger `AssetDatabase.Refresh()` — picks up new files without Ctrl+R. |
+
+### Blender Pipeline (v1.9+)
+
+| Endpoint | Method | Body | Description |
+|---|---|---|---|
+| `/assets/import-status` | GET | — | Check if an asset (GLB/FBX) imported successfully. Returns `exists`, `type`, `importer`, `subAssets[]`. |
+| `/api/assets/instantiate` | POST | `{"path":"Assets/Models/bar_stool.glb","name":"bar_stool","parent":"GeneratedProps","px":0,"py":0,"pz":0,"rx":0,"ry":0,"rz":0,"sx":1,"sy":1,"sz":1}` | Place an imported model in the scene. Creates parent if missing. |
+| `/api/assets/materials` | POST | `{"name":"BarStool_Mat","shader":"Standard","savePath":"Assets/Materials/Generated/BarStool_Mat.mat","properties":{"_Color":{"r":0.8,"g":0.2,"b":0.1,"a":1.0},"_Metallic":0.3}}` | Create and save a Material asset. Properties support Color (r/g/b/a dict), float, and texture path (string). |
+| `/api/scene/{name}/materials` | PUT | `{"materialPaths":["Assets/Materials/Generated/BarStool_Mat.mat"],"rendererIndex":0}` | Assign material(s) to a Renderer on a scene GameObject. |
+| `/api/assets/prefabs/save` | POST | `{"gameObject":"bar_stool","savePath":"Assets/Prefabs/Generated/bar_stool.prefab"}` | Save a scene GameObject as a prefab asset and connect it. |
 
 ### Scene & Editor Control (v1.8+)
 
@@ -191,7 +202,7 @@ curl -X POST http://localhost:7890/api/editor/undo
 
 - **GitHub**: `daeronryuujin/tiresias`
 - **Package ID**: `com.daeronryuujin.tiresias`
-- **Current version**: See `package.json` → `version` field
+- **Current version**: 1.9.0 (see `package.json` → `version` field)
 - **Default branch**: `main` (note: local repo also has `master` — always push to `main`)
 - **VPM listing URL**: `https://daeronryuujin.github.io/tiresias/index.json`
 
