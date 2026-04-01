@@ -12,6 +12,29 @@ namespace Tiresias
 {
     public static class TiresiasHandlers
     {
+        // ── POST /api/editor/menu ────────────────────────────────────────────
+        // Execute a Unity Editor menu item by path.
+        // Body: {"menuItem":"Tools/Wire YouTube Search UI"}
+
+        public static void ExecuteMenuItem(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var f = ParseBody(req, res); if (f == null) return;
+            f.TryGetValue("menuItem", out var menuItem);
+            if (string.IsNullOrEmpty(menuItem))
+            { ResponseHelper.Send(res, 400, "{\"error\":\"Missing 'menuItem' in body\"}"); return; }
+
+            var json = MainThreadDispatcher.Execute(() =>
+            {
+                bool success = EditorApplication.ExecuteMenuItem(menuItem);
+                return Json.Object(new Dictionary<string, object>
+                {
+                    ["success"] = success,
+                    ["menuItem"] = menuItem,
+                });
+            });
+            ResponseHelper.Send(res, 200, json);
+        }
+
         // ── /api/assets/refresh ───────────────────────────────────────────────
 
         public static void AssetRefresh(HttpListenerRequest req, HttpListenerResponse res)
@@ -1157,6 +1180,37 @@ namespace Tiresias
             }
         }
 
+        // ── PUT /api/scene/{name}/components/{type}/events/{event} ──────────
+        // Add a persistent listener to a UnityEvent (e.g. Button.onClick).
+        // Body: { "targetGameObjectName": "X", "targetComponentType": "UdonBehaviour",
+        //         "methodName": "SendCustomEvent", "argType": "string", "argValue": "OnSearchPressed" }
+
+        public static void AddEventListener(HttpListenerRequest req, HttpListenerResponse res,
+            string gameObjectName, string componentType, string eventName)
+        {
+            string body;
+            try { body = Json.ReadBody(req); }
+            catch { ResponseHelper.Send(res, 400, "{\"error\":\"Could not read request body\"}"); return; }
+
+            var f = Json.ParseFlat(body);
+            f.TryGetValue("targetGameObjectName", out var targetGoName);
+            f.TryGetValue("targetComponentType",  out var targetCompType);
+            f.TryGetValue("methodName",           out var methodName);
+            f.TryGetValue("argType",              out var argType);
+            f.TryGetValue("argValue",             out var argValue);
+
+            if (string.IsNullOrEmpty(targetGoName) || string.IsNullOrEmpty(methodName))
+            {
+                ResponseHelper.Send(res, 400,
+                    "{\"error\":\"Required: targetGameObjectName, methodName. Optional: targetComponentType, argType, argValue\"}");
+                return;
+            }
+
+            Dispatch(res, () => AddEventListenerOnMain(
+                gameObjectName, componentType, eventName,
+                targetGoName, targetCompType, methodName, argType, argValue));
+        }
+
         // ─────────────────────────────────────────────────────────────────────
         // Main-thread implementations
         // ─────────────────────────────────────────────────────────────────────
@@ -1264,9 +1318,25 @@ namespace Tiresias
                         TryF(vr, out float r); TryF(vg, out float g); TryF(vb, out float b);
                         float a = 1f; if (va != null) TryF(va, out a);
                         prop.colorValue = new Color(r, g, b, a); break;
+                    case "vrcurl":
+                        // Set a VRCUrl field (VRC.SDKBase.VRCUrl)
+                        var vrcUrlType = System.AppDomain.CurrentDomain.GetAssemblies()
+                            .SelectMany(a => { try { return a.GetTypes(); } catch { return new System.Type[0]; } })
+                            .FirstOrDefault(t => t.FullName == "VRC.SDKBase.VRCUrl");
+                        if (vrcUrlType == null)
+                            return HR.Error(500, "VRCUrl type not found — is VRChat SDK installed?");
+                        var vrcUrl = System.Activator.CreateInstance(vrcUrlType, new object[] { value ?? "" });
+                        // VRCUrl fields are serialized as managed references; set via reflection on the component
+                        var fieldInfo = comp.GetType().GetField(field,
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        if (fieldInfo == null)
+                            return HR.Error(400, $"Cannot find field '{field}' via reflection on '{compType}'");
+                        fieldInfo.SetValue(comp, vrcUrl);
+                        EditorUtility.SetDirty(comp);
+                        break;
                     default:
                         return HR.Error(400,
-                            $"Unknown valueType '{valType}'. Supported: float, int, bool, string, vector3, color");
+                            $"Unknown valueType '{valType}'. Supported: float, int, bool, string, vector3, color, vrcurl");
                 }
             }
             catch (Exception ex) { return HR.Error(400, $"Failed to set field: {ex.Message}"); }
@@ -1281,6 +1351,109 @@ namespace Tiresias
                 ["field"]      = field,
                 ["valueType"]  = valType,
                 ["value"]      = value ?? $"({valType})",
+            }));
+        }
+
+        private static HR AddEventListenerOnMain(
+            string goName, string compType, string eventName,
+            string targetGoName, string targetCompType, string methodName,
+            string argType, string argValue)
+        {
+            var go = GameObject.Find(goName);
+            if (go == null) return HR.Error(404, $"No GameObject '{goName}'");
+
+            var comp = FindComponentByTypeName(go, compType);
+            if (comp == null) return HR.Error(404, $"No component '{compType}' on '{goName}'");
+
+            var targetGo = GameObject.Find(targetGoName);
+            if (targetGo == null) return HR.Error(404, $"Target '{targetGoName}' not found");
+
+            // Find target component (default to first UdonBehaviour if not specified)
+            Component targetComp;
+            if (!string.IsNullOrEmpty(targetCompType))
+            {
+                targetComp = FindComponentByTypeName(targetGo, targetCompType);
+                if (targetComp == null)
+                    return HR.Error(404, $"No '{targetCompType}' on '{targetGoName}'");
+            }
+            else
+            {
+                targetComp = targetGo.GetComponents<Component>()
+                    .FirstOrDefault(c => c != null && c.GetType().Name == "UdonBehaviour");
+                if (targetComp == null)
+                    targetComp = targetGo.GetComponents<Component>().FirstOrDefault(c => c != null && c is MonoBehaviour);
+                if (targetComp == null)
+                    return HR.Error(404, $"No suitable target component on '{targetGoName}'");
+            }
+
+            // Find the UnityEvent field via SerializedObject
+            var so = new SerializedObject(comp);
+            // Common event field names: m_OnClick (Button), onValueChanged (Toggle/Slider), etc.
+            // Try the provided name, then m_OnClick as fallback for Button
+            var eventProp = so.FindProperty(eventName)
+                ?? so.FindProperty("m_" + eventName.Substring(0, 1).ToUpper() + eventName.Substring(1))
+                ?? so.FindProperty("m_OnClick"); // Button fallback
+
+            if (eventProp == null)
+                return HR.Error(400, $"No event '{eventName}' on '{compType}'. Try 'onClick' or 'm_OnClick'.");
+
+            // Navigate to the persistent calls array
+            var callsProp = eventProp.FindPropertyRelative("m_PersistentCalls.m_Calls");
+            if (callsProp == null || !callsProp.isArray)
+                return HR.Error(400, $"'{eventName}' doesn't appear to be a UnityEvent (no m_PersistentCalls)");
+
+            Undo.RecordObject(comp, $"Tiresias: AddEventListener {eventName} on {goName}");
+
+            // Add a new element
+            int idx = callsProp.arraySize;
+            callsProp.InsertArrayElementAtIndex(idx);
+            var call = callsProp.GetArrayElementAtIndex(idx);
+
+            call.FindPropertyRelative("m_Target").objectReferenceValue = targetComp;
+            call.FindPropertyRelative("m_MethodName").stringValue = methodName;
+            call.FindPropertyRelative("m_CallState").intValue = 2; // RuntimeOnly = 2
+
+            // Set argument mode and value
+            var argsProp = call.FindPropertyRelative("m_Arguments");
+            if (argType == "string" && argValue != null)
+            {
+                call.FindPropertyRelative("m_Mode").intValue = 5; // PersistentListenerMode.String = 5
+                argsProp.FindPropertyRelative("m_StringArgument").stringValue = argValue;
+            }
+            else if (argType == "int" && argValue != null)
+            {
+                call.FindPropertyRelative("m_Mode").intValue = 3; // PersistentListenerMode.Int = 3
+                argsProp.FindPropertyRelative("m_IntArgument").intValue = int.Parse(argValue);
+            }
+            else if (argType == "float" && argValue != null)
+            {
+                call.FindPropertyRelative("m_Mode").intValue = 4; // PersistentListenerMode.Float = 4
+                argsProp.FindPropertyRelative("m_FloatArgument").floatValue = float.Parse(argValue);
+            }
+            else if (argType == "bool" && argValue != null)
+            {
+                call.FindPropertyRelative("m_Mode").intValue = 6; // PersistentListenerMode.Bool = 6
+                argsProp.FindPropertyRelative("m_BoolArgument").boolValue = argValue.ToLower() == "true";
+            }
+            else
+            {
+                call.FindPropertyRelative("m_Mode").intValue = 1; // PersistentListenerMode.Void = 1
+            }
+
+            so.ApplyModifiedProperties();
+            MarkDirty(go);
+
+            return HR.Ok(Json.Object(new Dictionary<string, object>
+            {
+                ["success"]     = true,
+                ["gameObject"]  = goName,
+                ["component"]   = compType,
+                ["event"]       = eventName,
+                ["target"]      = targetGoName,
+                ["method"]      = methodName,
+                ["argType"]     = argType ?? "void",
+                ["argValue"]    = argValue ?? "",
+                ["listenerIdx"] = idx,
             }));
         }
 

@@ -81,6 +81,13 @@ curl http://localhost:$PORT/status
 | `/api/editor/stop` | POST | — | Exit play mode. Poll `/status` until `isPlaying` is false. |
 | `/api/editor/undo` | POST | — | Undo the last operation (Ctrl+Z equivalent). |
 | `/api/editor/redo` | POST | — | Redo the last undone operation (Ctrl+Y equivalent). |
+| `/api/editor/menu` | POST | `{"menuItem":"Tools/MyTool"}` | Execute any Unity Editor menu item by path. |
+
+### Events & VRCUrl (v1.10+)
+
+| Endpoint | Method | Body | Description |
+|---|---|---|---|
+| `/api/scene/{name}/components/{type}/events/{event}` | PUT | see below | Add a persistent listener to a UnityEvent field (e.g. Button.onClick). |
 
 All write operations are registered with Unity's Undo system — every scene change is undoable.
 
@@ -100,7 +107,20 @@ All write operations are registered with Unity's Undo system — every scene cha
 {"valueType":"string","value":"Hello"}
 {"valueType":"vector3","x":"0","y":"1","z":"0"}
 {"valueType":"color","r":"1","g":"0.5","b":"0","a":"1"}
+{"valueType":"vrcurl","value":"https://example.com/stream.m3u8"}
 ```
+
+#### AddEventListener body format
+
+```json
+// Wire Button.onClick → UdonBehaviour.SendCustomEvent("OnSearchPressed")
+{"targetGameObjectName":"MyUdon","targetComponentType":"UdonBehaviour","methodName":"SendCustomEvent","argType":"string","argValue":"OnSearchPressed"}
+
+// Wire Toggle.onValueChanged → void method (no arg)
+{"targetGameObjectName":"MyUdon","methodName":"OnToggleChanged"}
+```
+
+`argType` is optional — omit for void calls. Supported: `string`, `int`, `float`, `bool`.
 
 ## Usage Pattern (bash)
 
@@ -202,7 +222,7 @@ curl -X POST http://localhost:7890/api/editor/undo
 
 - **GitHub**: `daeronryuujin/tiresias`
 - **Package ID**: `com.daeronryuujin.tiresias`
-- **Current version**: 1.9.0 (see `package.json` → `version` field)
+- **Current version**: 1.10.0 (see `package.json` → `version` field)
 - **Default branch**: `main` (note: local repo also has `master` — always push to `main`)
 - **VPM listing URL**: `https://daeronryuujin.github.io/tiresias/index.json`
 

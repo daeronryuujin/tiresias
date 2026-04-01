@@ -304,6 +304,14 @@ namespace Tiresias
                         Uri.UnescapeDataString(segments[5]), Uri.UnescapeDataString(segments[7]));
                     return true;
                 }
+
+                // /api/scene/{name}/components/{type}/events/{event} PUT — add persistent listener
+                if (segments.Length == 8 && segments[4] == "components" && segments[6] == "events" && method == "PUT")
+                {
+                    TiresiasHandlers.AddEventListener(req, res, name,
+                        Uri.UnescapeDataString(segments[5]), Uri.UnescapeDataString(segments[7]));
+                    return true;
+                }
             }
 
             // /api/assets/prefabs/{path}
@@ -311,6 +319,13 @@ namespace Tiresias
             {
                 TiresiasHandlers.InstantiatePrefab(req, res,
                     Uri.UnescapeDataString(string.Join("/", segments, 4, segments.Length - 4)));
+                return true;
+            }
+
+            // /api/editor/menu POST — execute a Unity menu item
+            if (segments.Length == 4 && segments[1] == "api" && segments[2] == "editor" && segments[3] == "menu" && method == "POST")
+            {
+                TiresiasHandlers.ExecuteMenuItem(req, res);
                 return true;
             }
 
