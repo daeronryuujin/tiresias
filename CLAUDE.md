@@ -222,7 +222,7 @@ curl -X POST http://localhost:7890/api/editor/undo
 
 - **GitHub**: `daeronryuujin/tiresias`
 - **Package ID**: `com.daeronryuujin.tiresias`
-- **Current version**: 1.10.0 (see `package.json` → `version` field)
+- **Current version**: 1.11.0 (see `package.json` → `version` field)
 - **Default branch**: `main` (note: local repo also has `master` — always push to `main`)
 - **VPM listing URL**: `https://daeronryuujin.github.io/tiresias/index.json`
 

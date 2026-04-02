@@ -71,6 +71,12 @@ namespace Tiresias
                     // ── Build ─────────────────────────────────────────────────
                     case "/build/stats":
                         TiresiasHandlers.BuildStats(req, res); break;
+                    case "/build/validate":
+                        TiresiasHandlers.BuildValidate(req, res); break;
+
+                    // ── Meta ──────────────────────────────────────────────────
+                    case "/meta/claude-md-snippet":
+                        TiresiasHandlers.ClaudeMdSnippet(req, res); break;
 
                     // ── Batch ─────────────────────────────────────────────────
                     case "/batch":
@@ -102,16 +108,9 @@ namespace Tiresias
             System.Collections.Specialized.NameValueCollection query,
             HttpListenerRequest realReq, ResponseCapture capture)
         {
-            // For batch, we create a shim response that captures output
-            // We reuse the real request object — batch only supports read endpoints
-            // that use req.QueryString (which comes from the real request for now)
-            // TODO: inject query params from batch path
             try
             {
-                // For read endpoints, we can call the handler and capture via a wrapper
-                // Since handlers write to HttpListenerResponse, we use a simple approach:
-                // execute the handler logic directly and capture the result
-                var json = ExecuteReadEndpoint(method, path, realReq);
+                var json = ExecuteReadEndpoint(method, path, query);
                 if (json != null)
                 {
                     capture.Send(200, json);
@@ -129,9 +128,11 @@ namespace Tiresias
 
         /// <summary>
         /// Execute a read endpoint and return its JSON result directly.
+        /// Uses the provided query params (from the batch sub-request path).
         /// Returns null for unknown/unsupported routes.
         /// </summary>
-        private static string ExecuteReadEndpoint(string method, string path, HttpListenerRequest req)
+        private static string ExecuteReadEndpoint(string method, string path,
+            System.Collections.Specialized.NameValueCollection query)
         {
             if (method != "GET") return null;
 
@@ -140,7 +141,7 @@ namespace Tiresias
                 case "/status":
                     return MainThreadDispatcher.Execute(() => Json.Object(new System.Collections.Generic.Dictionary<string, object>
                     {
-                        ["status"] = "ok", ["version"] = "1.8.0",
+                        ["status"] = "ok", ["version"] = "1.11.0",
                         ["unityVersion"] = UnityEngine.Application.unityVersion,
                         ["isPlaying"] = UnityEditor.EditorApplication.isPlaying,
                         ["isCompiling"] = UnityEditor.EditorApplication.isCompiling,
@@ -148,7 +149,6 @@ namespace Tiresias
                     }));
 
                 case "/compiler/errors":
-                    // Access via handler's public method — it returns JSON directly
                     return TiresiasHandlers.GetCompilerErrorsJson();
 
                 case "/compiler/status":
@@ -158,10 +158,26 @@ namespace Tiresias
                         ["isUpdating"] = UnityEditor.EditorApplication.isUpdating,
                     }));
 
-                case "/scene/hierarchy":
-                    // Simplified — uses default depth 3
+                case "/scene":
                     return MainThreadDispatcher.Execute(() =>
                     {
+                        var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+                        return Json.Object(new System.Collections.Generic.Dictionary<string, object>
+                        {
+                            ["name"] = scene.name, ["path"] = scene.path,
+                            ["isDirty"] = scene.isDirty, ["isLoaded"] = scene.isLoaded,
+                            ["rootCount"] = scene.rootCount,
+                        });
+                    });
+
+                case "/scene/hierarchy":
+                    return MainThreadDispatcher.Execute(() =>
+                    {
+                        int maxDepth = 3;
+                        var depthParam = query != null ? query["depth"] : null;
+                        if (depthParam != null) int.TryParse(depthParam, out maxDepth);
+                        maxDepth = UnityEngine.Mathf.Clamp(maxDepth, 1, 10);
+
                         var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
                         var roots = scene.GetRootGameObjects();
                         var nodes = new System.Collections.Generic.List<string>();
@@ -172,6 +188,47 @@ namespace Tiresias
                             }));
                         return "[" + string.Join(",", nodes) + "]";
                     });
+
+                case "/scene/object":
+                    return MainThreadDispatcher.Execute(() =>
+                    {
+                        var name = query != null ? query["name"] : null;
+                        if (string.IsNullOrEmpty(name))
+                            return Json.Object(new System.Collections.Generic.Dictionary<string, object>
+                                { ["error"] = "Missing ?name= parameter" });
+                        var go = UnityEngine.GameObject.Find(name);
+                        if (go == null)
+                            return Json.Object(new System.Collections.Generic.Dictionary<string, object>
+                                { ["error"] = $"No GameObject named '{name}'" });
+                        var comps = go.GetComponents<UnityEngine.Component>();
+                        var compNames = new System.Collections.Generic.List<string>();
+                        foreach (var c in comps)
+                            if (c != null) compNames.Add(Json.Quote(c.GetType().Name));
+                        return Json.Object(new System.Collections.Generic.Dictionary<string, object>
+                        {
+                            ["name"] = go.name,
+                            ["active"] = go.activeSelf,
+                            ["components"] = new RawJson("[" + string.Join(",", compNames) + "]"),
+                        });
+                    });
+
+                case "/scene/selected":
+                    return MainThreadDispatcher.Execute(() =>
+                    {
+                        var selected = UnityEditor.Selection.gameObjects;
+                        var names = new System.Collections.Generic.List<string>();
+                        foreach (var go in selected) names.Add(Json.Quote(go.name));
+                        return "{\"selected\":[" + string.Join(",", names) + "]}";
+                    });
+
+                case "/build/stats":
+                    return TiresiasHandlers.GetBuildStatsJson();
+
+                case "/build/validate":
+                    return TiresiasHandlers.GetBuildValidateJson();
+
+                case "/meta/claude-md-snippet":
+                    return TiresiasHandlers.GetClaudeMdSnippetText();
 
                 default:
                     return null;

@@ -248,7 +248,7 @@ namespace Tiresias
             var json = MainThreadDispatcher.Execute(() => Json.Object(new Dictionary<string, object>
             {
                 ["status"]       = "ok",
-                ["version"]      = "1.9.0",
+                ["version"]      = "1.11.0",
                 ["unityVersion"] = Application.unityVersion,
                 ["projectPath"]  = System.IO.Path.GetFileName(Application.dataPath.Replace("/Assets", "")),
                 ["isPlaying"]    = EditorApplication.isPlaying,
@@ -813,6 +813,402 @@ namespace Tiresias
             ResponseHelper.Send(res, 200, json);
         }
 
+        // ── GET /build/validate ──────────────────────────────────────────────
+        // Returns VRChat SDK validation results and performance stats.
+
+        public static void BuildValidate(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var json = GetBuildValidateJson();
+            ResponseHelper.Send(res, 200, json);
+        }
+
+        /// <summary>Direct access for batch endpoint.</summary>
+        public static string GetBuildValidateJson()
+        {
+            return MainThreadDispatcher.Execute(() =>
+            {
+                var warnings = new List<string>();
+
+                // Check for VRCSDK
+                bool sdkPresent = FindTypeByFullName("VRC.SDKBase.VRC_SceneDescriptor") != null;
+
+                if (!sdkPresent)
+                {
+                    return Json.Object(new Dictionary<string, object>
+                    {
+                        ["sdkPresent"] = false,
+                        ["valid"] = false,
+                        ["stats"] = new RawJson("null"),
+                        ["warnings"] = new RawJson("[" + Json.Quote("VRChat SDK not detected in project") + "]"),
+                    });
+                }
+
+                // Gather performance stats
+                var meshFilters = UnityEngine.Object.FindObjectsOfType<MeshFilter>();
+                var skinnedRenderers = UnityEngine.Object.FindObjectsOfType<SkinnedMeshRenderer>();
+                var renderers = UnityEngine.Object.FindObjectsOfType<MeshRenderer>();
+
+                long totalTris = 0;
+                foreach (var mf in meshFilters)
+                    if (mf.sharedMesh != null) totalTris += mf.sharedMesh.triangles.Length / 3;
+                foreach (var sr in skinnedRenderers)
+                    if (sr.sharedMesh != null) totalTris += sr.sharedMesh.triangles.Length / 3;
+
+                var materials = new HashSet<Material>();
+                foreach (var r in renderers)
+                    foreach (var m in r.sharedMaterials)
+                        if (m != null) materials.Add(m);
+                foreach (var r in skinnedRenderers)
+                    foreach (var m in r.sharedMaterials)
+                        if (m != null) materials.Add(m);
+
+                var textures = new HashSet<Texture>();
+                foreach (var mat in materials)
+                {
+                    try
+                    {
+                        var shader = mat.shader;
+                        int propCount = ShaderUtil.GetPropertyCount(shader);
+                        for (int i = 0; i < propCount; i++)
+                        {
+                            if (ShaderUtil.GetPropertyType(shader, i) == ShaderUtil.ShaderPropertyType.TexEnv)
+                            {
+                                var propName = ShaderUtil.GetPropertyName(shader, i);
+                                var tex = mat.GetTexture(propName);
+                                if (tex != null) textures.Add(tex);
+                            }
+                        }
+                    }
+                    catch { /* skip materials with problematic shaders */ }
+                }
+
+                int meshRendererCount = renderers.Length + skinnedRenderers.Length;
+
+                // Check for missing references on VRC components
+                var sceneDescType = FindTypeByFullName("VRC.SDKBase.VRC_SceneDescriptor");
+                var udonBehaviourType = FindTypeByFullName("VRC.Udon.UdonBehaviour");
+
+                // Check scene descriptor exists
+                bool hasSceneDescriptor = false;
+                if (sceneDescType != null)
+                {
+                    var descriptors = UnityEngine.Object.FindObjectsOfType(sceneDescType);
+                    if (descriptors.Length == 0)
+                        warnings.Add("No VRC_SceneDescriptor found in scene — required for VRChat worlds");
+                    else
+                    {
+                        hasSceneDescriptor = true;
+                        if (descriptors.Length > 1)
+                            warnings.Add($"Multiple VRC_SceneDescriptor components found ({descriptors.Length}) — only one is allowed");
+                    }
+                }
+
+                // Check UdonBehaviours for missing program sources
+                if (udonBehaviourType != null)
+                {
+                    var udons = UnityEngine.Object.FindObjectsOfType(udonBehaviourType);
+                    foreach (var udon in udons)
+                    {
+                        try
+                        {
+                            var so = new SerializedObject(udon);
+                            var programProp = so.FindProperty("serializedProgramAsset");
+                            if (programProp != null && programProp.objectReferenceValue == null)
+                            {
+                                var goName = (udon as Component)?.gameObject?.name ?? "Unknown";
+                                warnings.Add($"UdonBehaviour on '{goName}' has no program source assigned");
+                            }
+                        }
+                        catch { /* skip if serialization fails */ }
+                    }
+                }
+
+                // Check for common VRC issues
+                foreach (var r in renderers)
+                {
+                    if (r.sharedMaterials.Any(m => m == null))
+                        warnings.Add($"MeshRenderer on '{r.gameObject.name}' has missing material slot(s)");
+                }
+                foreach (var r in skinnedRenderers)
+                {
+                    if (r.sharedMaterials.Any(m => m == null))
+                        warnings.Add($"SkinnedMeshRenderer on '{r.gameObject.name}' has missing material slot(s)");
+                }
+
+                bool valid = hasSceneDescriptor && warnings.Count == 0;
+
+                var warningJsonList = new List<string>();
+                foreach (var w in warnings) warningJsonList.Add(Json.Quote(w));
+
+                var stats = Json.Object(new Dictionary<string, object>
+                {
+                    ["triangles"] = totalTris,
+                    ["materials"] = materials.Count,
+                    ["textures"] = textures.Count,
+                    ["meshRenderers"] = meshRendererCount,
+                });
+
+                return Json.Object(new Dictionary<string, object>
+                {
+                    ["sdkPresent"] = true,
+                    ["valid"] = valid,
+                    ["stats"] = new RawJson(stats),
+                    ["warnings"] = new RawJson("[" + string.Join(",", warningJsonList) + "]"),
+                });
+            });
+        }
+
+        /// <summary>Direct access for batch endpoint.</summary>
+        public static string GetBuildStatsJson()
+        {
+            return MainThreadDispatcher.Execute(() =>
+            {
+                var renderers = UnityEngine.Object.FindObjectsOfType<MeshRenderer>();
+                var skinnedRenderers = UnityEngine.Object.FindObjectsOfType<SkinnedMeshRenderer>();
+                var meshFilters = UnityEngine.Object.FindObjectsOfType<MeshFilter>();
+
+                long totalTris = 0;
+                long totalVerts = 0;
+                var materials = new HashSet<Material>();
+                var textures = new HashSet<Texture>();
+
+                foreach (var mf in meshFilters)
+                {
+                    if (mf.sharedMesh != null)
+                    {
+                        totalTris += mf.sharedMesh.triangles.Length / 3;
+                        totalVerts += mf.sharedMesh.vertexCount;
+                    }
+                }
+
+                foreach (var sr in skinnedRenderers)
+                {
+                    if (sr.sharedMesh != null)
+                    {
+                        totalTris += sr.sharedMesh.triangles.Length / 3;
+                        totalVerts += sr.sharedMesh.vertexCount;
+                    }
+                }
+
+                foreach (var r in renderers)
+                    foreach (var m in r.sharedMaterials)
+                        if (m != null) materials.Add(m);
+                foreach (var r in skinnedRenderers)
+                    foreach (var m in r.sharedMaterials)
+                        if (m != null) materials.Add(m);
+                foreach (var mat in materials)
+                {
+                    try
+                    {
+                        var shader = mat.shader;
+                        int propCount = ShaderUtil.GetPropertyCount(shader);
+                        for (int i = 0; i < propCount; i++)
+                        {
+                            if (ShaderUtil.GetPropertyType(shader, i) == ShaderUtil.ShaderPropertyType.TexEnv)
+                            {
+                                var propName = ShaderUtil.GetPropertyName(shader, i);
+                                var tex = mat.GetTexture(propName);
+                                if (tex != null) textures.Add(tex);
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                var lights = UnityEngine.Object.FindObjectsOfType<Light>();
+                var audioSources = UnityEngine.Object.FindObjectsOfType<AudioSource>();
+                var particleSystems = UnityEngine.Object.FindObjectsOfType<ParticleSystem>();
+
+                return Json.Object(new Dictionary<string, object>
+                {
+                    ["triangles"]        = totalTris,
+                    ["vertices"]         = totalVerts,
+                    ["meshRenderers"]    = renderers.Length,
+                    ["skinnedRenderers"] = skinnedRenderers.Length,
+                    ["materials"]        = materials.Count,
+                    ["textures"]         = textures.Count,
+                    ["lights"]           = lights.Length,
+                    ["audioSources"]     = audioSources.Length,
+                    ["particleSystems"]  = particleSystems.Length,
+                });
+            });
+        }
+
+        // ── GET /meta/claude-md-snippet ──────────────────────────────────────
+        // Returns a markdown snippet summarizing the current project state.
+
+        public static void ClaudeMdSnippet(HttpListenerRequest req, HttpListenerResponse res)
+        {
+            var text = GetClaudeMdSnippetText();
+            // Return as plain text/markdown
+            res.StatusCode = 200;
+            res.ContentType = "text/markdown; charset=utf-8";
+            var bytes = System.Text.Encoding.UTF8.GetBytes(text);
+            res.ContentLength64 = bytes.Length;
+            try { res.OutputStream.Write(bytes, 0, bytes.Length); }
+            finally { res.OutputStream.Close(); }
+        }
+
+        /// <summary>Direct access for batch endpoint.</summary>
+        public static string GetClaudeMdSnippetText()
+        {
+            return MainThreadDispatcher.Execute(() =>
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine("# Tiresias Project State Snapshot");
+                sb.AppendLine();
+
+                // Registered endpoints
+                sb.AppendLine("## Registered Endpoints");
+                sb.AppendLine();
+                var endpoints = new string[]
+                {
+                    "GET  /status",
+                    "GET  /scene",
+                    "GET  /scene/hierarchy",
+                    "GET  /scene/object",
+                    "GET  /scene/selected",
+                    "GET  /scenes",
+                    "GET  /assets/scripts",
+                    "GET  /assets/prefabs",
+                    "GET  /assets/search",
+                    "GET  /assets/dependencies",
+                    "GET  /assets/import-status",
+                    "GET  /compiler/status",
+                    "GET  /compiler/errors",
+                    "GET  /console/logs",
+                    "GET  /build/stats",
+                    "GET  /build/validate",
+                    "GET  /meta/claude-md-snippet",
+                    "GET  /api/editor/screenshot",
+                    "POST /batch",
+                    "POST /api/scene/objects",
+                    "POST /api/scene/save",
+                    "POST /api/scene/open",
+                    "POST /api/assets/refresh",
+                    "POST /api/assets/prefabs/save",
+                    "POST /api/assets/instantiate",
+                    "POST /api/assets/materials",
+                    "POST /api/editor/play",
+                    "POST /api/editor/stop",
+                    "POST /api/editor/undo",
+                    "POST /api/editor/redo",
+                    "POST /api/editor/menu",
+                    "PUT  /api/scene/{name}/transform",
+                    "PUT  /api/scene/{name}/active",
+                    "PUT  /api/scene/{name}/parent",
+                    "PUT  /api/scene/{name}/materials",
+                    "PUT  /api/scene/{name}/components/{type}/fields/{field}",
+                    "PUT  /api/scene/{name}/components/{type}/events/{event}",
+                    "POST /api/scene/{name}/components",
+                    "DEL  /api/scene/{name}",
+                    "DEL  /api/scene/{name}/components/{type}",
+                    "POST /api/assets/prefabs/{path}",
+                };
+                foreach (var ep in endpoints)
+                    sb.AppendLine("- `" + ep + "`");
+                sb.AppendLine();
+
+                // Current scene
+                var scene = SceneManager.GetActiveScene();
+                sb.AppendLine("## Active Scene");
+                sb.AppendLine();
+                sb.AppendLine($"- **Name**: {scene.name}");
+                sb.AppendLine($"- **Path**: {scene.path}");
+                sb.AppendLine($"- **Dirty**: {scene.isDirty}");
+                sb.AppendLine();
+
+                // Scene hierarchy summary (top-level objects)
+                sb.AppendLine("## Top-Level Scene Objects");
+                sb.AppendLine();
+                var roots = scene.GetRootGameObjects();
+                foreach (var go in roots)
+                    sb.AppendLine($"- {go.name} ({go.transform.childCount} children)");
+                sb.AppendLine();
+
+                // Installed packages from manifest.json
+                sb.AppendLine("## Installed Packages");
+                sb.AppendLine();
+                var manifestPath = System.IO.Path.Combine(
+                    System.IO.Path.GetDirectoryName(Application.dataPath), "Packages", "manifest.json");
+                if (System.IO.File.Exists(manifestPath))
+                {
+                    try
+                    {
+                        var manifest = System.IO.File.ReadAllText(manifestPath);
+                        // Simple extraction of "dependencies" keys
+                        var depsIdx = manifest.IndexOf("\"dependencies\"");
+                        if (depsIdx >= 0)
+                        {
+                            var braceStart = manifest.IndexOf('{', depsIdx);
+                            if (braceStart >= 0)
+                            {
+                                int depth = 0;
+                                int i = braceStart;
+                                while (i < manifest.Length)
+                                {
+                                    if (manifest[i] == '{') depth++;
+                                    else if (manifest[i] == '}') { depth--; if (depth == 0) break; }
+                                    i++;
+                                }
+                                var depsBlock = manifest.Substring(braceStart, i - braceStart + 1);
+                                var deps = Json.ParseFlat(depsBlock);
+                                foreach (var kv in deps)
+                                    sb.AppendLine($"- `{kv.Key}`: {kv.Value}");
+                            }
+                        }
+                    }
+                    catch { sb.AppendLine("- (could not read manifest.json)"); }
+                }
+                else
+                {
+                    sb.AppendLine("- (Packages/manifest.json not found)");
+                }
+                sb.AppendLine();
+
+                // VRC component detection
+                sb.AppendLine("## Detected VRC Components");
+                sb.AppendLine();
+                var udonType = FindTypeByFullName("VRC.Udon.UdonBehaviour");
+                if (udonType != null)
+                {
+                    var udons = UnityEngine.Object.FindObjectsOfType(udonType);
+                    sb.AppendLine($"- UdonBehaviour: {udons.Length}");
+                }
+                else
+                {
+                    sb.AppendLine("- UdonBehaviour: (type not found -- SDK not installed?)");
+                }
+
+                var sceneDescType = FindTypeByFullName("VRC.SDKBase.VRC_SceneDescriptor");
+                if (sceneDescType != null)
+                {
+                    var descs = UnityEngine.Object.FindObjectsOfType(sceneDescType);
+                    sb.AppendLine($"- VRC_SceneDescriptor: {descs.Length}");
+                }
+
+                var mirrorType = FindTypeByFullName("VRC.SDKBase.VRC_MirrorReflection")
+                    ?? FindTypeByFullName("VRC.SDK3.Components.VRCMirrorReflection");
+                if (mirrorType != null)
+                {
+                    var mirrors = UnityEngine.Object.FindObjectsOfType(mirrorType);
+                    sb.AppendLine($"- VRCMirrorReflection: {mirrors.Length}");
+                }
+
+                var pickupType = FindTypeByFullName("VRC.SDKBase.VRC_Pickup")
+                    ?? FindTypeByFullName("VRC.SDK3.Components.VRCPickup");
+                if (pickupType != null)
+                {
+                    var pickups = UnityEngine.Object.FindObjectsOfType(pickupType);
+                    sb.AppendLine($"- VRCPickup: {pickups.Length}");
+                }
+
+                sb.AppendLine();
+
+                return sb.ToString();
+            });
+        }
+
         // ── POST /batch ───────────────────────────────────────────────────────
         // Body: [{"method":"GET","path":"/scene/hierarchy"},{"method":"GET","path":"/compiler/errors"}]
 
@@ -1359,102 +1755,113 @@ namespace Tiresias
             string targetGoName, string targetCompType, string methodName,
             string argType, string argValue)
         {
-            var go = GameObject.Find(goName);
-            if (go == null) return HR.Error(404, $"No GameObject '{goName}'");
-
-            var comp = FindComponentByTypeName(go, compType);
-            if (comp == null) return HR.Error(404, $"No component '{compType}' on '{goName}'");
-
-            var targetGo = GameObject.Find(targetGoName);
-            if (targetGo == null) return HR.Error(404, $"Target '{targetGoName}' not found");
-
-            // Find target component (default to first UdonBehaviour if not specified)
-            Component targetComp;
-            if (!string.IsNullOrEmpty(targetCompType))
+            try
             {
-                targetComp = FindComponentByTypeName(targetGo, targetCompType);
-                if (targetComp == null)
-                    return HR.Error(404, $"No '{targetCompType}' on '{targetGoName}'");
+                var go = GameObject.Find(goName);
+                if (go == null) return HR.Error(404, $"No GameObject '{goName}'");
+
+                var comp = FindComponentByTypeName(go, compType);
+                if (comp == null) return HR.Error(404, $"No component '{compType}' on '{goName}'");
+
+                var targetGo = GameObject.Find(targetGoName);
+                if (targetGo == null) return HR.Error(404, $"Target '{targetGoName}' not found");
+
+                // Find target component (default to first UdonBehaviour if not specified)
+                Component targetComp;
+                if (!string.IsNullOrEmpty(targetCompType))
+                {
+                    targetComp = FindComponentByTypeName(targetGo, targetCompType);
+                    if (targetComp == null)
+                        return HR.Error(404, $"No '{targetCompType}' on '{targetGoName}'");
+                }
+                else
+                {
+                    targetComp = targetGo.GetComponents<Component>()
+                        .FirstOrDefault(c => c != null && c.GetType().Name == "UdonBehaviour");
+                    if (targetComp == null)
+                        targetComp = targetGo.GetComponents<Component>().FirstOrDefault(c => c != null && c is MonoBehaviour);
+                    if (targetComp == null)
+                        return HR.Error(404, $"No suitable target component on '{targetGoName}'");
+                }
+
+                // Find the UnityEvent field via SerializedObject
+                var so = new SerializedObject(comp);
+                // Common event field names: m_OnClick (Button), onValueChanged (Toggle/Slider), etc.
+                // Try the provided name, then m_OnClick as fallback for Button
+                var eventProp = so.FindProperty(eventName)
+                    ?? so.FindProperty("m_" + eventName.Substring(0, 1).ToUpper() + eventName.Substring(1))
+                    ?? so.FindProperty("m_OnClick"); // Button fallback
+
+                if (eventProp == null)
+                    return HR.Error(400, $"No event '{eventName}' on '{compType}'. Try 'onClick' or 'm_OnClick'.");
+
+                // Navigate to the persistent calls array
+                var callsProp = eventProp.FindPropertyRelative("m_PersistentCalls.m_Calls");
+                if (callsProp == null || !callsProp.isArray)
+                    return HR.Error(400, $"'{eventName}' doesn't appear to be a UnityEvent (no m_PersistentCalls)");
+
+                Undo.RecordObject(comp, $"Tiresias: AddEventListener {eventName} on {goName}");
+
+                // Add a new element
+                int idx = callsProp.arraySize;
+                callsProp.InsertArrayElementAtIndex(idx);
+                var call = callsProp.GetArrayElementAtIndex(idx);
+
+                call.FindPropertyRelative("m_Target").objectReferenceValue = targetComp;
+                call.FindPropertyRelative("m_MethodName").stringValue = methodName;
+                call.FindPropertyRelative("m_CallState").intValue = 2; // RuntimeOnly = 2
+
+                // Set argument mode and value
+                var argsProp = call.FindPropertyRelative("m_Arguments");
+                if (argType == "string" && argValue != null)
+                {
+                    call.FindPropertyRelative("m_Mode").intValue = 5; // PersistentListenerMode.String = 5
+                    argsProp.FindPropertyRelative("m_StringArgument").stringValue = argValue;
+                }
+                else if (argType == "int" && argValue != null)
+                {
+                    call.FindPropertyRelative("m_Mode").intValue = 3; // PersistentListenerMode.Int = 3
+                    if (!int.TryParse(argValue, out int intVal))
+                        return HR.Error(400, $"Cannot parse '{argValue}' as int for event argument");
+                    argsProp.FindPropertyRelative("m_IntArgument").intValue = intVal;
+                }
+                else if (argType == "float" && argValue != null)
+                {
+                    call.FindPropertyRelative("m_Mode").intValue = 4; // PersistentListenerMode.Float = 4
+                    if (!TryF(argValue, out float floatVal))
+                        return HR.Error(400, $"Cannot parse '{argValue}' as float for event argument");
+                    argsProp.FindPropertyRelative("m_FloatArgument").floatValue = floatVal;
+                }
+                else if (argType == "bool" && argValue != null)
+                {
+                    call.FindPropertyRelative("m_Mode").intValue = 6; // PersistentListenerMode.Bool = 6
+                    argsProp.FindPropertyRelative("m_BoolArgument").boolValue = argValue.ToLower() == "true";
+                }
+                else
+                {
+                    call.FindPropertyRelative("m_Mode").intValue = 1; // PersistentListenerMode.Void = 1
+                }
+
+                so.ApplyModifiedProperties();
+                MarkDirty(go);
+
+                return HR.Ok(Json.Object(new Dictionary<string, object>
+                {
+                    ["success"]     = true,
+                    ["gameObject"]  = goName,
+                    ["component"]   = compType,
+                    ["event"]       = eventName,
+                    ["target"]      = targetGoName,
+                    ["method"]      = methodName,
+                    ["argType"]     = argType ?? "void",
+                    ["argValue"]    = argValue ?? "",
+                    ["listenerIdx"] = idx,
+                }));
             }
-            else
+            catch (Exception ex)
             {
-                targetComp = targetGo.GetComponents<Component>()
-                    .FirstOrDefault(c => c != null && c.GetType().Name == "UdonBehaviour");
-                if (targetComp == null)
-                    targetComp = targetGo.GetComponents<Component>().FirstOrDefault(c => c != null && c is MonoBehaviour);
-                if (targetComp == null)
-                    return HR.Error(404, $"No suitable target component on '{targetGoName}'");
+                return HR.Error(500, $"Failed to add event listener: {ex.Message}");
             }
-
-            // Find the UnityEvent field via SerializedObject
-            var so = new SerializedObject(comp);
-            // Common event field names: m_OnClick (Button), onValueChanged (Toggle/Slider), etc.
-            // Try the provided name, then m_OnClick as fallback for Button
-            var eventProp = so.FindProperty(eventName)
-                ?? so.FindProperty("m_" + eventName.Substring(0, 1).ToUpper() + eventName.Substring(1))
-                ?? so.FindProperty("m_OnClick"); // Button fallback
-
-            if (eventProp == null)
-                return HR.Error(400, $"No event '{eventName}' on '{compType}'. Try 'onClick' or 'm_OnClick'.");
-
-            // Navigate to the persistent calls array
-            var callsProp = eventProp.FindPropertyRelative("m_PersistentCalls.m_Calls");
-            if (callsProp == null || !callsProp.isArray)
-                return HR.Error(400, $"'{eventName}' doesn't appear to be a UnityEvent (no m_PersistentCalls)");
-
-            Undo.RecordObject(comp, $"Tiresias: AddEventListener {eventName} on {goName}");
-
-            // Add a new element
-            int idx = callsProp.arraySize;
-            callsProp.InsertArrayElementAtIndex(idx);
-            var call = callsProp.GetArrayElementAtIndex(idx);
-
-            call.FindPropertyRelative("m_Target").objectReferenceValue = targetComp;
-            call.FindPropertyRelative("m_MethodName").stringValue = methodName;
-            call.FindPropertyRelative("m_CallState").intValue = 2; // RuntimeOnly = 2
-
-            // Set argument mode and value
-            var argsProp = call.FindPropertyRelative("m_Arguments");
-            if (argType == "string" && argValue != null)
-            {
-                call.FindPropertyRelative("m_Mode").intValue = 5; // PersistentListenerMode.String = 5
-                argsProp.FindPropertyRelative("m_StringArgument").stringValue = argValue;
-            }
-            else if (argType == "int" && argValue != null)
-            {
-                call.FindPropertyRelative("m_Mode").intValue = 3; // PersistentListenerMode.Int = 3
-                argsProp.FindPropertyRelative("m_IntArgument").intValue = int.Parse(argValue);
-            }
-            else if (argType == "float" && argValue != null)
-            {
-                call.FindPropertyRelative("m_Mode").intValue = 4; // PersistentListenerMode.Float = 4
-                argsProp.FindPropertyRelative("m_FloatArgument").floatValue = float.Parse(argValue);
-            }
-            else if (argType == "bool" && argValue != null)
-            {
-                call.FindPropertyRelative("m_Mode").intValue = 6; // PersistentListenerMode.Bool = 6
-                argsProp.FindPropertyRelative("m_BoolArgument").boolValue = argValue.ToLower() == "true";
-            }
-            else
-            {
-                call.FindPropertyRelative("m_Mode").intValue = 1; // PersistentListenerMode.Void = 1
-            }
-
-            so.ApplyModifiedProperties();
-            MarkDirty(go);
-
-            return HR.Ok(Json.Object(new Dictionary<string, object>
-            {
-                ["success"]     = true,
-                ["gameObject"]  = goName,
-                ["component"]   = compType,
-                ["event"]       = eventName,
-                ["target"]      = targetGoName,
-                ["method"]      = methodName,
-                ["argType"]     = argType ?? "void",
-                ["argValue"]    = argValue ?? "",
-                ["listenerIdx"] = idx,
-            }));
         }
 
         // ── GET /assets/import-status ─────────────────────────────────────────
