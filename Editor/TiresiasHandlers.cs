@@ -1633,14 +1633,25 @@ namespace Tiresias
                 return HR.Error(404, $"No component '{compType}' on '{goName}'. Available: [{string.Join(", ", avail)}]");
             }
 
-            var so   = new SerializedObject(comp);
+            // For UdonBehaviour, try to get the UdonSharp proxy which has the real serialized fields
+            Component proxyComp = null;
+            bool isUdonProxy = false;
+            if (comp.GetType().Name == "UdonBehaviour")
+            {
+                proxyComp = TryGetUdonSharpProxy(comp);
+                if (proxyComp != null) isUdonProxy = true;
+            }
+
+            var targetComp = isUdonProxy ? proxyComp : comp;
+            var so   = new SerializedObject(targetComp);
             var prop = so.FindProperty(field);
             if (prop == null)
                 return HR.Error(400, $"No field '{field}' on '{compType}'. Available: [{string.Join(", ", ListSerializedFields(so))}]");
-            if (prop.propertyType != SerializedPropertyType.ObjectReference)
+            if (prop.propertyType != SerializedPropertyType.ObjectReference
+                && prop.propertyType != SerializedPropertyType.Generic)
                 return HR.Error(400, $"Field '{field}' is '{prop.propertyType}' — use 'valueType' for primitives");
 
-            Undo.RecordObject(comp, $"Tiresias: SetField {field} on {goName}");
+            Undo.RecordObject(targetComp, $"Tiresias: SetField {field} on {goName}");
 
             var targetGo = GameObject.Find(targetGoName);
             if (targetGo == null) return HR.Error(404, $"Target '{targetGoName}' not found");
@@ -1659,8 +1670,38 @@ namespace Tiresias
                 targetObj = tc; typeName = tc.GetType().Name;
             }
 
-            prop.objectReferenceValue = targetObj;
+            // Handle array fields: if the property is an array, find first null slot or expand
+            if (prop.isArray && prop.propertyType == SerializedPropertyType.Generic)
+            {
+                int slotIndex = -1;
+                for (int i = 0; i < prop.arraySize; i++)
+                {
+                    var elem = prop.GetArrayElementAtIndex(i);
+                    if (elem.propertyType == SerializedPropertyType.ObjectReference
+                        && elem.objectReferenceValue == null)
+                    {
+                        slotIndex = i;
+                        break;
+                    }
+                }
+                if (slotIndex < 0)
+                {
+                    slotIndex = prop.arraySize;
+                    prop.InsertArrayElementAtIndex(slotIndex);
+                }
+                var slot = prop.GetArrayElementAtIndex(slotIndex);
+                slot.objectReferenceValue = targetObj;
+            }
+            else
+            {
+                prop.objectReferenceValue = targetObj;
+            }
+
             so.ApplyModifiedProperties();
+
+            // If we used an UdonSharp proxy, sync changes back to the UdonBehaviour
+            if (isUdonProxy)
+                TryCopyProxyToUdon(proxyComp);
 
             return HR.Ok(Json.Object(new Dictionary<string, object>
             {
@@ -1673,6 +1714,47 @@ namespace Tiresias
                     ["name"] = targetGo.name, ["type"] = typeName,
                 })),
             }));
+        }
+
+        /// <summary>
+        /// Given an UdonBehaviour component, try to get its UdonSharp proxy behaviour
+        /// which exposes public variables as regular serialized fields.
+        /// Uses reflection to avoid hard dependency on UdonSharp editor assemblies.
+        /// </summary>
+        private static Component TryGetUdonSharpProxy(Component udonBehaviour)
+        {
+            try
+            {
+                var utilType = FindTypeByFullName("UdonSharpEditor.UdonSharpEditorUtility");
+                if (utilType == null) return null;
+
+                var getProxy = utilType.GetMethod("GetProxyBehaviour",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                if (getProxy == null) return null;
+
+                return getProxy.Invoke(null, new object[] { udonBehaviour }) as Component;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// After modifying fields on the UdonSharp proxy, sync changes back to the UdonBehaviour.
+        /// </summary>
+        private static void TryCopyProxyToUdon(Component proxy)
+        {
+            try
+            {
+                var utilType = FindTypeByFullName("UdonSharpEditor.UdonSharpEditorUtility");
+                if (utilType == null) return;
+
+                var copyMethod = utilType.GetMethod("CopyProxyToUdon",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
+                    null, new[] { FindTypeByFullName("UdonSharp.UdonSharpBehaviour") }, null);
+                if (copyMethod == null) return;
+
+                copyMethod.Invoke(null, new object[] { proxy });
+            }
+            catch { }
         }
 
         private static HR SetValOnMain(string goName, string compType, string field,
